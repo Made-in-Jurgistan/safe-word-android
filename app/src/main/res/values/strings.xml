@@ -1,0 +1,79 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Safe Word</string>
+    <string name="accessibility_service_description">Safe Word uses accessibility to insert transcribed text directly into text fields in any app. No data is collected or transmitted.</string>
+
+    <!-- SettingsScreen -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_made_in_jurgistan">Made in Jurgistan</string>
+    <string name="settings_section_overlay">Overlay</string>
+    <string name="settings_overlay_enabled">Floating mic button</string>
+    <string name="settings_overlay_enabled_desc">Show a mic button over text fields for quick voice input</string>
+    <string name="settings_section_appearance">Appearance</string>
+    <string name="settings_dark_mode_system">System default</string>
+    <string name="settings_dark_mode_light">Light</string>
+    <string name="settings_dark_mode_dark">Dark</string>
+    <string name="settings_section_about">About</string>
+    <string name="settings_label_version">Version</string>
+    <string name="settings_label_whisper_backend">Whisper Backend</string>
+    <string name="settings_whisper_native">whisper.cpp (native)</string>
+    <string name="settings_whisper_not_loaded">Not loaded</string>
+    <string name="settings_label_based_on">Based on</string>
+    <string name="settings_based_on_value">yo mama</string>
+    <string name="settings_retry">Retry</string>
+    <string name="settings_cd_download">Download %1$s</string>
+    <string name="settings_cd_selected">%1$s selected</string>
+    <string name="settings_cd_select">Select %1$s</string>
+    <string name="settings_cd_delete">Delete %1$s</string>
+
+    <!-- OnboardingScreen -->
+    <string name="onboarding_title">Safe Word</string>
+    <string name="onboarding_subtitle">Lets set things up in a few quick steps.</string>
+    <string name="onboarding_step_title">Step %1$d: %2$s</string>
+    <string name="onboarding_step_complete">Complete</string>
+    <string name="onboarding_step_mic_title">Microphone access</string>
+    <string name="onboarding_step_mic_subtitle">Required for voice to text</string>
+    <string name="onboarding_step_mic_action">Allow</string>
+    <string name="onboarding_step_notif_title">Notifications</string>
+    <string name="onboarding_step_notif_subtitle">Required to show recording status</string>
+    <string name="onboarding_step_notif_action">Allow</string>
+    <string name="onboarding_step_overlay_title">Overlay permission</string>
+    <string name="onboarding_step_overlay_subtitle">Allow Safe Word to show a floating mic button</string>
+    <string name="onboarding_step_overlay_action">Allow</string>
+    <string name="onboarding_step_a11y_title">Accessibility service</string>
+    <string name="onboarding_step_a11y_subtitle">Enable Safe Word to insert text into any app</string>
+    <string name="onboarding_step_a11y_action">Enable</string>
+    <string name="onboarding_step_model_title">Speech model</string>
+    <string name="onboarding_step_model_preparing">Preparing download (%1$s)...</string>
+    <string name="onboarding_step_model_downloading">Downloading... %1$d%%</string>
+    <string name="onboarding_step_model_downloaded">Downloaded</string>
+    <string name="onboarding_step_model_error">Error: %1$s</string>
+    <string name="onboarding_step_model_retry">Retry</string>
+    <string name="onboarding_continue">Continue</string>
+
+    <!-- RecordingService -->
+    <string name="recording_channel_name">Recording</string>
+    <string name="recording_channel_description">Shown while Safe Word is recording audio</string>
+    <string name="recording_notification_title">Safe Word</string>
+    <string name="recording_notification_text">Recording audio…</string>
+
+    <!-- FloatingOverlayService -->
+    <string name="overlay_channel_name">Floating overlay</string>
+    <string name="overlay_channel_description">Shown while the floating mic button is active</string>
+    <string name="overlay_notification_title">Safe Word</string>
+    <string name="overlay_notification_text">Floating mic button ready</string>
+
+    <!-- Clipboard labels -->
+    <string name="clipboard_label">Safe Word</string>
+    <string name="clipboard_label_transcription">Safe Word Transcription</string>
+
+    <!-- Transcription errors -->
+    <string name="error_recording_failed">Recording failed</string>
+    <string name="error_transcription_failed">Transcription failed</string>
+    <string name="error_no_audio_recorded">No audio recorded</string>
+    <string name="error_no_speech_detected">No speech detected — audio was all silence</string>
+    <string name="error_no_model_downloaded">No model downloaded. Please download a model in Settings.</string>
+    <string name="error_voice_command_failed">Voice command could not be performed</string>
+    <string name="error_accessibility_service_inactive">Enable Safe Word accessibility service to use voice commands</string>
+    <string name="error_undo_redo_unavailable">Undo/Redo requires Android 14 or newer</string>
+</resources>

@@ -1,0 +1,44 @@
+# Build outputs
+*.apk
+*.aab
+*.iml
+*.class
+*.dex
+*.log
+build/
+build_log.txt
+
+# Gradle
+.gradle/
+local.properties
+
+# IDE
+.idea/
+*.iws
+.DS_Store
+Thumbs.db
+
+# NDK / CMake build artifacts
+*.so
+*.o
+*.a
+obj/
+.cxx/
+
+# Temp files
+*.tmp
+*.swp
+*~
+
+# APK signing
+*.jks
+*.keystore
+
+# Serena config
+.serena/
+
+# Junk files at repo root
+list[str]
+User
+handy-android/I'
+handy-android/IIBBBBB'
