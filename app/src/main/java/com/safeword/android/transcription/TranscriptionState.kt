@@ -20,6 +20,8 @@ sealed interface TranscriptionState {
     /** Audio captured, currently running whisper inference. */
     data class Transcribing(
         val audioDurationMs: Long = 0,
+        /** Live partial text accumulated from streaming segment callbacks. Empty until first segment arrives. */
+        val partialText: String = "",
     ) : TranscriptionState
 
     /** Transcription complete. Text available. */

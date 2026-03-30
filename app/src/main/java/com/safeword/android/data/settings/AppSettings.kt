@@ -11,10 +11,6 @@ data class AppSettings(
     // Audio settings
     val maxRecordingDurationSec: Int = 600,
 
-    // Language
-    val language: String = "en",
-    val autoDetectLanguage: Boolean = false,
-
     // Output settings
     val autoCopyToClipboard: Boolean = true,
     val autoInsertText: Boolean = true,
@@ -50,9 +46,6 @@ data class AppSettings(
     val noSpeechThreshold: Float = 0.6f,
     val logprobThreshold: Float = -1.0f,
     val entropyThreshold: Float = 2.4f,
-
-    // Translation
-    val translateToEnglish: Boolean = false,
 
     // Optional decoder prompt to bias Whisper vocabulary/style (empty = no prompt)
     val initialPrompt: String = "",

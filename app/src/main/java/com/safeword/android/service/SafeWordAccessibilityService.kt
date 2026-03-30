@@ -345,6 +345,8 @@ class SafeWordAccessibilityService : AccessibilityService() {
             is VoiceAction.UppercaseSelection -> performTransformSelection { it.uppercase() }
             is VoiceAction.LowercaseSelection -> performTransformSelection { it.lowercase() }
 
+            is VoiceAction.ReplaceText -> performReplaceText(action.oldText, action.newText)
+            is VoiceAction.SearchText -> performSearch(action.query)
             is VoiceAction.GoBack -> performGlobalAction(GLOBAL_ACTION_BACK)
             is VoiceAction.Send -> performSend()
 
@@ -479,20 +481,14 @@ class SafeWordAccessibilityService : AccessibilityService() {
     }
 
     private fun performSend(): Boolean {
-        // Simulate pressing Enter/Send via IME action on the focused node
-        val node = getFocusedEditableNode()
-        if (node != null) {
-            val args = Bundle().apply {
-                putInt(
-                    AccessibilityNodeInfo.ACTION_ARGUMENT_MOVEMENT_GRANULARITY_INT,
-                    AccessibilityNodeInfo.MOVEMENT_GRANULARITY_LINE,
-                )
+        val root = rootInActiveWindow
+        if (root != null) {
+            val sendButton = findSendButton(root)
+            if (sendButton != null) {
+                val clicked = sendButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                if (clicked) return true
             }
-            // Try clicking the send/action button if IME exposes one; fall back to newline
-            val clicked = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            if (clicked) return true
         }
-        // Fall back to inserting newline as a "send" attempt
         return performTextInsertion("\n")
     }
 
@@ -509,5 +505,39 @@ class SafeWordAccessibilityService : AccessibilityService() {
             node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, moveArgs)
         }
         return result
+    }
+
+    private fun performReplaceText(oldText: String, newText: String): Boolean {
+        val node = getFocusedEditableNode() ?: return false
+        val current = node.text?.toString() ?: return false
+        val idx = current.lowercase().indexOf(oldText.lowercase())
+        if (idx < 0) return false
+        val replaced = current.substring(0, idx) + newText + current.substring(idx + oldText.length)
+        return setTextAndCursor(node, replaced, idx + newText.length)
+    }
+
+    private fun performSearch(query: String): Boolean {
+        return performTextInsertion(query) && performSend()
+    }
+
+    private fun findSendButton(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val keywords = setOf("send", "submit", "search", "go", "senden", "suchen", "abschicken")
+        return findNodeByContentDesc(root, keywords)
+    }
+
+    private fun findNodeByContentDesc(
+        node: AccessibilityNodeInfo,
+        keywords: Set<String>,
+        depth: Int = 0,
+    ): AccessibilityNodeInfo? {
+        if (depth > 15) return null
+        val desc = node.contentDescription?.toString()?.lowercase()
+        if (desc != null && node.isClickable && keywords.any { desc.contains(it) }) return node
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findNodeByContentDesc(child, keywords, depth + 1)
+            if (found != null) return found
+        }
+        return null
     }
 }

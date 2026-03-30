@@ -20,12 +20,15 @@ import javax.inject.Singleton
 @Singleton
 class WhisperEngine @Inject constructor(
     @ApplicationContext private val appContext: Context,
-) {
+) : TranscriptionEngine {
 
     private var contextPtr: Long = 0
     private var currentModelPath: String? = null
     private var currentUseGpu: Boolean = false
     private val mutex = Mutex()
+
+    override val isLoaded: Boolean
+        get() = contextPtr != 0L
 
     /**
      * Load a Whisper GGML model file.
@@ -36,7 +39,7 @@ class WhisperEngine @Inject constructor(
      *               Default false — CPU with ARM NEON is faster than Vulkan on most
      *               mobile GPUs for medium-sized models.
      */
-    suspend fun loadModel(path: String, useGpu: Boolean = false): Boolean = mutex.withLock {
+    override suspend fun loadModel(path: String, useGpu: Boolean): Boolean = mutex.withLock {
         withContext(Dispatchers.IO) {
             val modelName = java.io.File(path).name
             Timber.i("[ENTER] WhisperEngine.loadModel | model=%s useGpu=%b", modelName, useGpu)
@@ -73,6 +76,127 @@ class WhisperEngine @Inject constructor(
             Timber.e(e, "[ERROR] WhisperEngine.loadModel | failed loadMs=%d model=%s", loadMs, modelName)
             false
         }
+        }
+    }
+
+    /**
+     * Transcribe via [TranscriptionConfig] — satisfies the [TranscriptionEngine] interface.
+     * Delegates to the fully-parameterised overload below.
+     */
+    override suspend fun transcribe(
+        samples: FloatArray,
+        config: TranscriptionConfig,
+    ): TranscriptionResult = transcribe(
+        samples = samples,
+        language = config.language,
+        nThreads = config.nThreads,
+        translate = config.translate,
+        autoDetect = config.autoDetect,
+        initialPrompt = config.initialPrompt,
+        useVad = config.useVad,
+        vadModelPath = config.vadModelPath,
+        vadThreshold = config.vadThreshold,
+        vadMinSpeechMs = config.vadMinSpeechMs,
+        vadMinSilenceMs = config.vadMinSilenceMs,
+        vadSpeechPadMs = config.vadSpeechPadMs,
+        noSpeechThreshold = config.noSpeechThreshold,
+        logprobThreshold = config.logprobThreshold,
+        entropyThreshold = config.entropyThreshold,
+    )
+
+    /**
+     * Transcribe PCM audio samples via whisper.cpp JNI with per-segment streaming callbacks.
+     *
+     * [onSegment] is called on the inference thread for each segment as it is decoded.
+     * The returned [TranscriptionResult] carries the aggregated final text.
+     *
+     * @param samples   Float array of PCM samples normalized to [-1.0, 1.0]
+     * @param config    Inference configuration
+     * @param onSegment Called for each new decoded segment (non-blocking, thread-safe required)
+     */
+    override suspend fun transcribeStreaming(
+        samples: FloatArray,
+        config: TranscriptionConfig,
+        onSegment: (String) -> Unit,
+    ): TranscriptionResult = mutex.withLock {
+        withContext(Dispatchers.Default) {
+            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+            require(contextPtr != 0L) { "Model not loaded — call loadModel() first" }
+            require(samples.isNotEmpty()) { "Empty audio buffer" }
+
+            val sampleRate = 16_000
+            val startTime = System.currentTimeMillis()
+            val audioDurationMs = (samples.size.toLong() * 1000) / sampleRate
+
+            Timber.i(
+                "[ENTER] WhisperEngine.transcribeStreaming | audioSec=%.2f sampleCount=%d threads=%d lang=%s"
+                    .format(
+                        samples.size.toFloat() / sampleRate,
+                        samples.size,
+                        config.nThreads,
+                        config.language,
+                    ),
+            )
+
+            val jsonStr = WhisperLib.nativeTranscribeStreaming(
+                contextPtr = contextPtr,
+                samples = samples,
+                language = config.language,
+                nThreads = config.nThreads,
+                translate = config.translate,
+                autoDetect = config.autoDetect,
+                initialPrompt = config.initialPrompt,
+                useVad = config.useVad,
+                vadModelPath = config.vadModelPath,
+                vadThreshold = config.vadThreshold,
+                vadMinSpeechMs = config.vadMinSpeechMs,
+                vadMinSilenceMs = config.vadMinSilenceMs,
+                vadSpeechPadMs = config.vadSpeechPadMs,
+                noSpeechThreshold = config.noSpeechThreshold,
+                logprobThreshold = config.logprobThreshold,
+                entropyThreshold = config.entropyThreshold,
+                segmentCallback = SegmentCallback { text -> onSegment(text) },
+            )
+
+            val inferenceDuration = System.currentTimeMillis() - startTime
+            val rtf = if (audioDurationMs > 0) inferenceDuration.toFloat() / audioDurationMs else 0f
+
+            val json = org.json.JSONObject(jsonStr)
+            val text = json.optString("text", "")
+            val noSpeechProb = json.optDouble("no_speech_prob", 0.0).toFloat()
+            val avgLogprob = json.optDouble("avg_logprob", 0.0).toFloat()
+
+            Timber.i(
+                "[PERF] WhisperEngine.transcribeStreaming | inferenceMs=%d audioDurationMs=%d rtf=%.2f textLen=%d noSpeech=%.3f"
+                    .format(inferenceDuration, audioDurationMs, rtf, text.length, noSpeechProb),
+            )
+
+            if (noSpeechProb > config.noSpeechThreshold) {
+                Timber.w(
+                    "[BRANCH] WhisperEngine.transcribeStreaming | hallucination suppressed noSpeech=%.3f > threshold=%.3f",
+                    noSpeechProb,
+                    config.noSpeechThreshold,
+                )
+                return@withContext TranscriptionResult(
+                    text = "",
+                    audioDurationMs = audioDurationMs,
+                    inferenceDurationMs = inferenceDuration,
+                    language = if (config.autoDetect) "auto" else config.language,
+                    noSpeechProb = noSpeechProb,
+                    avgLogprob = avgLogprob,
+                )
+            }
+
+            Timber.d("[EXIT] WhisperEngine.transcribeStreaming | textLen=%d", text.length)
+
+            TranscriptionResult(
+                text = text.trim(),
+                audioDurationMs = audioDurationMs,
+                inferenceDurationMs = inferenceDuration,
+                language = if (config.autoDetect) "auto" else config.language,
+                noSpeechProb = noSpeechProb,
+                avgLogprob = avgLogprob,
+            )
         }
     }
 
@@ -190,7 +314,7 @@ class WhisperEngine @Inject constructor(
      * Uses the same thread count as real transcription so Vulkan compiles identical
      * shader pipelines, and a 5-second buffer to match typical recording lengths.
      */
-    suspend fun prewarm(): Unit = mutex.withLock {
+    override suspend fun prewarm(): Unit = mutex.withLock {
         withContext(Dispatchers.Default) {
             if (contextPtr == 0L) return@withContext
             val startMs = System.currentTimeMillis()
@@ -214,7 +338,7 @@ class WhisperEngine @Inject constructor(
         }
     }
 
-    suspend fun release() = mutex.withLock {
+    override suspend fun release() = mutex.withLock {
         withContext(Dispatchers.IO) {
             val modelName = currentModelPath?.let { java.io.File(it).name }
             Timber.i("[ENTER] WhisperEngine.release | ptr=%d model=%s", contextPtr, modelName)

@@ -29,10 +29,15 @@ data class ModelInfo(
     companion object {
         private const val HF_WHISPER_BASE = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
         private const val HF_VAD_BASE = "https://huggingface.co/ggml-org/whisper-vad/resolve/main"
+        private const val HF_MOONSHINE_BASE = "https://huggingface.co/UsefulSensors/moonshine/resolve/main/onnx"
         /** Hardcoded model ID for the sole Whisper model. */
         const val WHISPER_MODEL_ID = "small.en-q8_0"
         /** Hardcoded model ID for the GGML Silero VAD model used by whisper.cpp native VAD. */
         const val VAD_MODEL_ID = "silero-v6.2.0"
+        /** Moonshine Tiny model ID (fastest, English-only). */
+        const val MOONSHINE_TINY_MODEL_ID = "moonshine-tiny"
+        /** Moonshine Base model ID (higher accuracy, English-only). */
+        const val MOONSHINE_BASE_MODEL_ID = "moonshine-base"
 
         /** All models shipped with Safe Word. */
         val AVAILABLE_MODELS = listOf(
@@ -57,6 +62,26 @@ data class ModelInfo(
                 isQuantized = false,
                 modelType = ModelType.SILERO_VAD,
             ),
+            ModelInfo(
+                id = MOONSHINE_TINY_MODEL_ID,
+                name = "Moonshine Tiny",
+                sizeBytes = 27_000_000,
+                description = "Moonshine Tiny — English-only, 27 MB, ~5× faster than real-time on ARM.",
+                downloadUrl = "$HF_MOONSHINE_BASE/tiny/preprocess.onnx",
+                language = "en",
+                isQuantized = false,
+                modelType = ModelType.MOONSHINE,
+            ),
+            ModelInfo(
+                id = MOONSHINE_BASE_MODEL_ID,
+                name = "Moonshine Base",
+                sizeBytes = 60_000_000,
+                description = "Moonshine Base — English-only, 60 MB, higher accuracy than Tiny.",
+                downloadUrl = "$HF_MOONSHINE_BASE/base/preprocess.onnx",
+                language = "en",
+                isQuantized = false,
+                modelType = ModelType.MOONSHINE,
+            ),
         )
 
         fun findById(id: String): ModelInfo? = AVAILABLE_MODELS.find { it.id == id }
@@ -67,6 +92,7 @@ data class ModelInfo(
 enum class ModelType {
     WHISPER,
     SILERO_VAD,
+    MOONSHINE,
 }
 
 /**

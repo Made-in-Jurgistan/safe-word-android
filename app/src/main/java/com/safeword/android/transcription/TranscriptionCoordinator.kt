@@ -495,9 +495,8 @@ class TranscriptionCoordinator @Inject constructor(
         val inputContext = currentInputContext()
         val contextualPrompt = buildContextAwarePrompt(settings.initialPrompt, inputContext)
 
-        Timber.i("[ENTER] TranscriptionCoordinator.transcribe | sampleCount=%d durationSec=%.2f lang=%s threads=%d vadEnabled=%b translate=%b autoDetect=%b",
-            samples.size, audioDurationSec, settings.language, whisperThreads,
-            settings.vadEnabled, settings.translateToEnglish, settings.autoDetectLanguage)
+        Timber.i("[ENTER] TranscriptionCoordinator.transcribe | sampleCount=%d durationSec=%.2f threads=%d vadEnabled=%b",
+            samples.size, audioDurationSec, whisperThreads, settings.vadEnabled)
         Timber.d("[TRANSCRIPTION] transcribe | inputContext pkg=%s hint=%s class=%s promptLen=%d",
             inputContext.packageName, inputContext.hintText, inputContext.className, contextualPrompt.length)
 
@@ -574,17 +573,28 @@ class TranscriptionCoordinator @Inject constructor(
             // Disable native VAD — audio is already pre-trimmed by ONNX Silero
             // VAD above; running a second VAD pass inside whisper.cpp adds latency
             // with no benefit on pre-processed audio.
-            val rawResult = whisperEngine.transcribe(
-                samples = paddedSamples,
-                language = settings.language,
+            val inferenceConfig = TranscriptionConfig(
+                language = "en",
                 nThreads = whisperThreads,
-                translate = settings.translateToEnglish,
-                autoDetect = settings.autoDetectLanguage,
+                translate = false,
+                autoDetect = false,
                 initialPrompt = contextualPrompt,
                 useVad = false,
                 noSpeechThreshold = settings.noSpeechThreshold,
                 logprobThreshold = settings.logprobThreshold,
                 entropyThreshold = settings.entropyThreshold,
+            )
+            val accumulatedText = StringBuilder()
+            val rawResult = whisperEngine.transcribeStreaming(
+                samples = paddedSamples,
+                config = inferenceConfig,
+                onSegment = { segmentText ->
+                    accumulatedText.append(segmentText)
+                    _state.value = TranscriptionState.Transcribing(
+                        audioDurationMs = audioDurationMs,
+                        partialText = accumulatedText.toString().trim(),
+                    )
+                },
             )
 
             val correctedRawText = ConfusionSetCorrector.apply(
@@ -694,7 +704,7 @@ class TranscriptionCoordinator @Inject constructor(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Timber.e(e, "[TRANSCRIPTION] transcribe | error lang=%s threads=%d", settings.language, whisperThreads)
+            Timber.e(e, "[TRANSCRIPTION] transcribe | error threads=%d", whisperThreads)
             _state.value = TranscriptionState.Error(
                 message = e.message ?: context.getString(R.string.error_transcription_failed),
                 previousState = TranscriptionState.Transcribing(audioDurationMs),

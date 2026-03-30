@@ -537,4 +537,68 @@ class VoiceCommandDetectorTest {
         assertIs<VoiceCommandResult.Text>(result)
         assertEquals(longInput, result.rawText)
     }
+
+    // -------------------------------------------------------------------------
+    // Parameterized commands — ReplaceText (English)
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `replace hello with world returns ReplaceText`() {
+        val result = VoiceCommandDetector.detect("replace hello with world")
+        assertIs<VoiceCommandResult.Command>(result)
+        assertEquals(VoiceAction.ReplaceText("hello", "world"), result.action)
+    }
+
+    @Test
+    fun `change hello to world returns ReplaceText`() {
+        val result = VoiceCommandDetector.detect("change hello to world")
+        assertIs<VoiceCommandResult.Command>(result)
+        assertEquals(VoiceAction.ReplaceText("hello", "world"), result.action)
+    }
+
+    @Test
+    fun `swap hello with world returns ReplaceText`() {
+        val result = VoiceCommandDetector.detect("swap hello with world")
+        assertIs<VoiceCommandResult.Command>(result)
+        assertEquals(VoiceAction.ReplaceText("hello", "world"), result.action)
+    }
+
+    @Test
+    fun `polite replace hello with world returns ReplaceText`() {
+        val result = VoiceCommandDetector.detect("please replace hello with world please")
+        assertIs<VoiceCommandResult.Command>(result)
+        assertEquals(VoiceAction.ReplaceText("hello", "world"), result.action)
+    }
+
+    // -------------------------------------------------------------------------
+    // Parameterized commands — SearchText (English)
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `search for cats returns SearchText`() {
+        val result = VoiceCommandDetector.detect("search for cats")
+        assertIs<VoiceCommandResult.Command>(result)
+        assertEquals(VoiceAction.SearchText("cats"), result.action)
+    }
+
+    @Test
+    fun `look up android tips returns SearchText`() {
+        val result = VoiceCommandDetector.detect("look up android tips")
+        assertIs<VoiceCommandResult.Command>(result)
+        assertEquals(VoiceAction.SearchText("android tips"), result.action)
+    }
+
+    @Test
+    fun `google android tips returns SearchText`() {
+        val result = VoiceCommandDetector.detect("google android tips")
+        assertIs<VoiceCommandResult.Command>(result)
+        assertEquals(VoiceAction.SearchText("android tips"), result.action)
+    }
+
+    @Test
+    fun `utterance longer than 150 chars is not a command`() {
+        val longText = "a".repeat(151)
+        val result = VoiceCommandDetector.detect(longText)
+        assertIs<VoiceCommandResult.Text>(result)
+    }
 }

@@ -113,7 +113,7 @@ object VoiceCommandDetector {
     private val POLITE_SUFFIX = Regex("\\b(?:please|thanks|thank\\s+you)\\s*$", RegexOption.IGNORE_CASE)
 
     /** Max raw length that could plausibly be a command (with wake-word + polite wrappers). */
-    private const val MAX_COMMAND_RAW_LENGTH = 80
+    private const val MAX_COMMAND_RAW_LENGTH = 150
 
     private val COMMAND_STEMS: Set<String> = setOf(
         "delete", "undo", "redo", "select", "copy", "cut", "paste",
@@ -121,6 +121,24 @@ object VoiceCommandDetector {
         "back", "stop", "period", "comma", "question", "exclamation", "enter",
         "erase", "remove", "scratch", "highlight", "done", "dash", "colon",
         "semicolon", "hyphen", "dot",
+        "replace", "change", "search", "find", "look", "google", "swap",
+    )
+
+    /** Parameterized replace patterns: group 1 = old text, group 2 = new text. */
+    private val REPLACE_PATTERNS: List<Regex> = listOf(
+        Regex("^replace (.+) with (.+)$"),
+        Regex("^change (.+) to (.+)$"),
+        Regex("^swap (.+) with (.+)$"),
+        Regex("^find (.+) and replace with (.+)$"),
+        Regex("^find (.+) and replace by (.+)$"),
+    )
+
+    /** Parameterized search patterns: group 1 = query. */
+    private val SEARCH_PATTERNS: List<Regex> = listOf(
+        Regex("^search for (.+)$"),
+        Regex("^look up (.+)$"),
+        Regex("^google (.+)$"),
+        Regex("^search (.+)$"),
     )
 
     /**
@@ -142,7 +160,7 @@ object VoiceCommandDetector {
         // to avoid false positives on normal dictation.
         val normalized = normalizeCandidate(trimmed)
 
-        val action = COMMAND_MAP[normalized]
+        val action = COMMAND_MAP[normalized] ?: matchParameterizedCommand(normalized)
         return if (action != null) {
             Timber.i("[VOICE] VoiceCommandDetector.detect | command=\"%s\" action=%s", normalized, action)
             VoiceCommandResult.Command(action)
@@ -188,10 +206,34 @@ object VoiceCommandDetector {
             candidate = candidate.trimStart(',', ':', '-', ' ').trimEnd(',', ':', '-', ' ')
         } while (changed && candidate.isNotEmpty())
 
-        return candidate
+        var normalized = candidate
             .lowercase()
             .replace(WHITESPACE_PATTERN, " ")
             .trim()
+        return normalized
+    }
+
+    /**
+     * Try to match a parameterised voice command (replace or search) from the
+     * normalised utterance. Returns null when no pattern matches.
+     */
+    private fun matchParameterizedCommand(normalized: String): VoiceAction? {
+        for (pattern in REPLACE_PATTERNS) {
+            val match = pattern.matchEntire(normalized) ?: continue
+            val oldText = match.groupValues[1].trim()
+            val newText = match.groupValues[2].trim()
+            if (oldText.isNotEmpty() && newText.isNotEmpty()) {
+                return VoiceAction.ReplaceText(oldText, newText)
+            }
+        }
+        for (pattern in SEARCH_PATTERNS) {
+            val match = pattern.matchEntire(normalized) ?: continue
+            val query = match.groupValues[1].trim()
+            if (query.isNotEmpty()) {
+                return VoiceAction.SearchText(query)
+            }
+        }
+        return null
     }
 
     private fun logPotentialCommandMiss(trimmedText: String) {
@@ -240,6 +282,8 @@ sealed interface VoiceAction {
     data object UppercaseSelection : VoiceAction
     data object LowercaseSelection : VoiceAction
     data class InsertText(val text: String) : VoiceAction
+    data class ReplaceText(val oldText: String, val newText: String) : VoiceAction
+    data class SearchText(val query: String) : VoiceAction
     data object Send : VoiceAction
     data object ClearAll : VoiceAction
     data object GoBack : VoiceAction

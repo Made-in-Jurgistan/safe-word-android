@@ -72,10 +72,52 @@ object WhisperLib {
         entropyThreshold: Float,
     ): String
 
+    /**
+     * Transcribe float PCM samples and call [segmentCallback].onSegment(text) for each
+     * decoded segment as inference progresses.
+     *
+     * Parameters are identical to [nativeTranscribe]; returns the same compact JSON
+     * once all segments are complete.
+     */
+    external fun nativeTranscribeStreaming(
+        contextPtr: Long,
+        samples: FloatArray,
+        language: String,
+        nThreads: Int,
+        translate: Boolean,
+        autoDetect: Boolean,
+        initialPrompt: String,
+        useVad: Boolean,
+        vadModelPath: String,
+        vadThreshold: Float,
+        vadMinSpeechMs: Int,
+        vadMinSilenceMs: Int,
+        vadSpeechPadMs: Int,
+        noSpeechThreshold: Float,
+        logprobThreshold: Float,
+        entropyThreshold: Float,
+        segmentCallback: SegmentCallback,
+    ): String
+
     /** Free whisper context and release resources. */
     external fun nativeFree(contextPtr: Long)
 
     /** Returns true if real whisper.cpp is compiled in. */
     external fun nativeIsRealWhisper(): Boolean
 
+}
+
+/**
+ * Callback interface for per-segment streaming transcription.
+ *
+ * Implemented as a Kotlin SAM (fun interface) so callers can pass a lambda:
+ * ```kotlin
+ * WhisperLib.nativeTranscribeStreaming(..., segmentCallback = { text -> … })
+ * ```
+ *
+ * [onSegment] is invoked on the native inference thread for each segment decoded.
+ * Implementations must be non-blocking and thread-safe.
+ */
+fun interface SegmentCallback {
+    fun onSegment(text: String)
 }

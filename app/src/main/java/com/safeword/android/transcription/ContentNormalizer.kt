@@ -279,6 +279,7 @@ object ContentNormalizer {
     // -- Fillers & stutters ---------------------------------------------------
 
     private val DEFAULT_FILLER_WORDS = linkedSetOf(
+        // English fillers
         "uh", "um", "uhm", "umm", "uhh", "uhhh",
         "ah", "hmm", "hm", "mmm", "mm", "mh",
         "eh", "ehh", "ha", "erm",
@@ -293,6 +294,7 @@ object ContentNormalizer {
     // -- Self-repair ----------------------------------------------------------
 
     private val EDITING_TERMS = listOf(
+        // English
         "oh no actually", "well actually", "scratch that", "forget that",
         "never mind", "or rather", "no wait", "oh wait", "oh no wait",
         "oh no", "wait no", "i mean", "no no no", "no no",
@@ -307,6 +309,7 @@ object ContentNormalizer {
 
     /** Known Whisper hallucination phrases (case-insensitive match). */
     private val HALLUCINATION_PHRASES = listOf(
+        // English
         "thank you for watching",
         "thanks for watching",
         "please subscribe",
@@ -337,6 +340,7 @@ object ContentNormalizer {
     // -- Backtrack triggers ---------------------------------------------------
 
     private val BACKTRACK_TRIGGERS = listOf(
+        // English
         "actually no", "scratch that", "no wait", "I mean",
     )
 

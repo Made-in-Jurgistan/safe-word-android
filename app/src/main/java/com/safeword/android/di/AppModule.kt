@@ -6,6 +6,8 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.safeword.android.data.db.SafeWordDatabase
 import com.safeword.android.data.db.TranscriptionDao
+import com.safeword.android.transcription.TranscriptionEngine
+import com.safeword.android.transcription.WhisperEngine
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -77,4 +79,8 @@ object AppModule {
         Timber.d("[INIT] AppModule.provideTranscriptionDao")
         return database.transcriptionDao()
     }
+
+    @Provides
+    @Singleton
+    fun provideTranscriptionEngine(engine: WhisperEngine): TranscriptionEngine = engine
 }

@@ -160,6 +160,79 @@ extern "C"
     }
 
     /**
+     * User data passed to whisper's new_segment_callback.
+     * All fields are valid for the lifetime of the nativeTranscribeStreaming call.
+     *
+     * JavaVM* is stored instead of JNIEnv* because new_segment_callback fires on
+     * whisper.cpp's internal compute thread, which is a different thread from the
+     * JNI entry point. JNIEnv* is per-thread and MUST NOT be used across threads.
+     * JavaVM* is process-wide and safe to share; we attach/detach as needed.
+     */
+    struct CallbackData
+    {
+        JavaVM *vm;
+        jobject callback_obj; // global reference to the SegmentCallback Kotlin object
+        jmethodID on_segment_id;
+    };
+
+    /**
+     * Fired by whisper.cpp on its internal compute thread whenever n_new new
+     * segments have been committed to the context.
+     *
+     * We attach the compute thread to the JVM for the duration of the call and
+     * detach afterwards to avoid leaking a thread attachment.
+     */
+    static void segment_callback(
+        struct whisper_context *ctx,
+        struct whisper_state * /* state */,
+        int n_new,
+        void *user_data)
+    {
+        auto *cb = static_cast<CallbackData *>(user_data);
+
+        JNIEnv *env = nullptr;
+        bool attached = false;
+        jint status = cb->vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6);
+        if (status == JNI_EDETACHED)
+        {
+            if (cb->vm->AttachCurrentThreadAsDaemon(
+                    reinterpret_cast<JNIEnv **>(&env), nullptr) != JNI_OK)
+            {
+                LOGE("segment_callback: failed to attach compute thread to JVM");
+                return;
+            }
+            attached = true;
+        }
+        else if (status != JNI_OK || env == nullptr)
+        {
+            LOGE("segment_callback: GetEnv failed status=%d", status);
+            return;
+        }
+
+        int total = whisper_full_n_segments(ctx);
+        for (int i = total - n_new; i < total; ++i)
+        {
+            const char *text = whisper_full_get_segment_text(ctx, i);
+            if (!text)
+                continue;
+            jstring jtext = env->NewStringUTF(text);
+            if (!jtext)
+                continue;
+            env->CallVoidMethod(cb->callback_obj, cb->on_segment_id, jtext);
+            env->DeleteLocalRef(jtext);
+            // Propagate Kotlin exception (e.g. CancellationException) outward
+            if (env->ExceptionCheck())
+            {
+                env->ExceptionClear();
+                break;
+            }
+        }
+
+        if (attached)
+            cb->vm->DetachCurrentThread();
+    }
+
+    /**
      * Transcribe PCM float audio samples with full settings support.
      *
      * Returns a JSON string:
@@ -336,6 +409,168 @@ extern "C"
 
         LOGI("Transcription complete: %d segments, %zu chars, no_speech=%.3f, avg_logprob=%.3f",
              n_segments, full_text.size(), doc_no_speech, doc_avg_logprob);
+        return env->NewStringUTF(json.c_str());
+    }
+
+    /**
+     * Transcribe PCM float audio samples and invoke [segmentCallback].onSegment(String)
+     * for each segment as it is decoded.
+     *
+     * Returns the same compact JSON as nativeTranscribe once all segments are complete.
+     *
+     * @param segmentCallback  Kotlin SegmentCallback instance (onSegment(String):Unit)
+     */
+    JNIEXPORT jstring JNICALL
+    Java_com_safeword_android_transcription_WhisperLib_nativeTranscribeStreaming(
+        JNIEnv *env, jobject /* this */,
+        jlong contextPtr, jfloatArray samples, jstring jlanguage, jint nThreads,
+        jboolean translate, jboolean autoDetect, jstring jinitialPrompt,
+        jboolean useVad, jstring jvadModelPath,
+        jfloat vadThreshold, jint vadMinSpeechMs, jint vadMinSilenceMs, jint vadSpeechPadMs,
+        jfloat noSpeechThreshold, jfloat logprobThreshold, jfloat entropyThreshold,
+        jobject segmentCallback)
+    {
+        static const char *EMPTY_JSON = "{\"text\":\"\",\"no_speech_prob\":0.0,\"avg_logprob\":0.0}";
+
+        if (contextPtr == 0)
+        {
+            LOGE("nativeTranscribeStreaming called with null context");
+            return env->NewStringUTF(EMPTY_JSON);
+        }
+
+        if (segmentCallback == nullptr)
+        {
+            LOGE("nativeTranscribeStreaming called with null segmentCallback");
+            return env->NewStringUTF(EMPTY_JSON);
+        }
+
+        // Resolve the onSegment method ID once before inference starts
+        jclass cb_class = env->GetObjectClass(segmentCallback);
+        jmethodID on_segment_id = env->GetMethodID(cb_class, "onSegment", "(Ljava/lang/String;)V");
+        env->DeleteLocalRef(cb_class);
+        if (!on_segment_id)
+        {
+            LOGE("nativeTranscribeStreaming: could not find onSegment method on SegmentCallback");
+            return env->NewStringUTF(EMPTY_JSON);
+        }
+
+        auto *ctx = reinterpret_cast<struct whisper_context *>(contextPtr);
+        jsize n_samples = env->GetArrayLength(samples);
+
+        const char *lang = env->GetStringUTFChars(jlanguage, nullptr);
+        const char *prompt = env->GetStringUTFChars(jinitialPrompt, nullptr);
+        const char *vad_path = env->GetStringUTFChars(jvadModelPath, nullptr);
+
+        jfloat *audio_data = env->GetFloatArrayElements(samples, nullptr);
+
+        if (n_samples == 0 || audio_data == nullptr)
+        {
+            LOGW("nativeTranscribeStreaming: empty audio buffer");
+            if (audio_data)
+                env->ReleaseFloatArrayElements(samples, audio_data, JNI_ABORT);
+            env->ReleaseStringUTFChars(jvadModelPath, vad_path);
+            env->ReleaseStringUTFChars(jinitialPrompt, prompt);
+            env->ReleaseStringUTFChars(jlanguage, lang);
+            return env->NewStringUTF(EMPTY_JSON);
+        }
+
+        int threads = std::max(1, std::min(static_cast<int>(nThreads), 16));
+
+        struct whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
+        params.print_realtime = false;
+        params.print_progress = false;
+        params.print_timestamps = false;
+        params.print_special = false;
+        params.translate = static_cast<bool>(translate);
+        params.language = autoDetect ? "auto" : lang;
+        params.n_threads = threads;
+        params.offset_ms = 0;
+        params.no_context = true;
+        params.single_segment = false; // must be false for mid-decode partial callbacks
+        params.max_len = 25;           // fire new_segment_callback every ~5 words
+        params.split_on_word = true;   // align boundaries to word edges
+        params.suppress_blank = true;
+        params.suppress_nst = true;
+        params.no_timestamps = true;
+        params.greedy.best_of = 1;
+        params.temperature_inc = 0.0f;
+        params.initial_prompt = (prompt != nullptr && prompt[0] != '\0') ? prompt : nullptr;
+
+        // Wire up the per-segment callback.
+        // Capture JavaVM* (process-wide) rather than JNIEnv* (per-thread) because
+        // segment_callback fires on whisper's internal compute thread.
+        JavaVM *vm = nullptr;
+        env->GetJavaVM(&vm);
+        CallbackData cb_data{vm, segmentCallback, on_segment_id};
+        params.new_segment_callback = segment_callback;
+        params.new_segment_callback_user_data = &cb_data;
+
+        params.vad = static_cast<bool>(useVad);
+        if (useVad && vad_path != nullptr && vad_path[0] != '\0')
+        {
+            params.vad_model_path = vad_path;
+            params.vad_params.threshold = vadThreshold;
+            params.vad_params.min_speech_duration_ms = vadMinSpeechMs;
+            params.vad_params.min_silence_duration_ms = vadMinSilenceMs;
+            params.vad_params.max_speech_duration_s = 30.0f;
+            params.vad_params.speech_pad_ms = vadSpeechPadMs;
+            params.vad_params.samples_overlap = 0.1f;
+        }
+
+        params.no_speech_thold = noSpeechThreshold;
+        params.logprob_thold = logprobThreshold;
+        params.entropy_thold = entropyThreshold;
+
+        LOGI("nativeTranscribeStreaming: %d samples (%.1fs), threads=%d, lang=%s",
+             n_samples, static_cast<float>(n_samples) / 16000.0f, threads,
+             autoDetect ? "auto" : lang);
+
+        int ret = whisper_full(ctx, params, audio_data, n_samples);
+
+        env->ReleaseFloatArrayElements(samples, audio_data, JNI_ABORT);
+        env->ReleaseStringUTFChars(jvadModelPath, vad_path);
+        env->ReleaseStringUTFChars(jinitialPrompt, prompt);
+        env->ReleaseStringUTFChars(jlanguage, lang);
+
+        if (ret != 0)
+        {
+            LOGE("nativeTranscribeStreaming: whisper_full() failed with code %d", ret);
+            return env->NewStringUTF(EMPTY_JSON);
+        }
+
+        // Build the same compact JSON as nativeTranscribe
+        int n_segments = whisper_full_n_segments(ctx);
+        double total_no_speech = 0.0;
+        std::string full_text;
+        full_text.reserve(static_cast<size_t>(n_segments) * 40);
+        for (int i = 0; i < n_segments; i++)
+        {
+            const char *text = whisper_full_get_segment_text(ctx, i);
+            if (text)
+                full_text += text;
+            total_no_speech += whisper_full_get_segment_no_speech_prob(ctx, i);
+        }
+
+        float doc_no_speech = (n_segments > 0)
+                                  ? static_cast<float>(total_no_speech / n_segments)
+                                  : 0.0f;
+        float doc_avg_logprob = 0.0f;
+
+        std::string json;
+        json.reserve(full_text.size() + 96);
+        json += "{\"text\":\"";
+        json += json_escape(full_text.c_str());
+        json += "\",\"no_speech_prob\":";
+        char nbuf[32];
+        snprintf(nbuf, sizeof(nbuf), "%.4f", doc_no_speech);
+        json += nbuf;
+        json += ",\"avg_logprob\":";
+        snprintf(nbuf, sizeof(nbuf), "%.4f", doc_avg_logprob);
+        json += nbuf;
+        json += "}";
+
+        LOGI("nativeTranscribeStreaming complete: %d segments, %zu chars, no_speech=%.3f",
+             n_segments, full_text.size(), doc_no_speech);
         return env->NewStringUTF(json.c_str());
     }
 

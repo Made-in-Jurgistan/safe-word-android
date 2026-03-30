@@ -33,10 +33,6 @@ class SettingsRepository @Inject constructor(
         val COLOR_PALETTE = stringPreferencesKey("color_palette")
         // Overlay
         val OVERLAY_ENABLED = booleanPreferencesKey("overlay_enabled")
-        // Transcription language
-        val LANGUAGE = stringPreferencesKey("language")
-        val AUTO_DETECT_LANGUAGE = booleanPreferencesKey("auto_detect_language")
-        val TRANSLATE_TO_ENGLISH = booleanPreferencesKey("translate_to_english")
         // Output behaviour
         val AUTO_COPY_TO_CLIPBOARD = booleanPreferencesKey("auto_copy_to_clipboard")
         val AUTO_INSERT_TEXT = booleanPreferencesKey("auto_insert_text")
@@ -71,9 +67,6 @@ class SettingsRepository @Inject constructor(
             darkMode = prefs[Keys.DARK_MODE] ?: defaults.darkMode,
             colorPalette = prefs[Keys.COLOR_PALETTE] ?: defaults.colorPalette,
             overlayEnabled = prefs[Keys.OVERLAY_ENABLED] ?: defaults.overlayEnabled,
-            language = prefs[Keys.LANGUAGE] ?: defaults.language,
-            autoDetectLanguage = prefs[Keys.AUTO_DETECT_LANGUAGE] ?: defaults.autoDetectLanguage,
-            translateToEnglish = prefs[Keys.TRANSLATE_TO_ENGLISH] ?: defaults.translateToEnglish,
             autoCopyToClipboard = prefs[Keys.AUTO_COPY_TO_CLIPBOARD] ?: defaults.autoCopyToClipboard,
             autoInsertText = prefs[Keys.AUTO_INSERT_TEXT] ?: defaults.autoInsertText,
             saveToHistory = prefs[Keys.SAVE_TO_HISTORY] ?: defaults.saveToHistory,
@@ -113,22 +106,6 @@ class SettingsRepository @Inject constructor(
     }
 
 
-
-    // Transcription language
-    suspend fun updateLanguage(language: String) {
-        Timber.i("[SETTINGS] updateLanguage | language=%s", language)
-        context.dataStore.edit { it[Keys.LANGUAGE] = language }
-    }
-
-    suspend fun updateAutoDetectLanguage(enabled: Boolean) {
-        Timber.i("[SETTINGS] updateAutoDetectLanguage | enabled=%b", enabled)
-        context.dataStore.edit { it[Keys.AUTO_DETECT_LANGUAGE] = enabled }
-    }
-
-    suspend fun updateTranslateToEnglish(enabled: Boolean) {
-        Timber.i("[SETTINGS] updateTranslateToEnglish | enabled=%b", enabled)
-        context.dataStore.edit { it[Keys.TRANSLATE_TO_ENGLISH] = enabled }
-    }
 
     // Output behaviour
     suspend fun updateAutoCopyToClipboard(enabled: Boolean) {
