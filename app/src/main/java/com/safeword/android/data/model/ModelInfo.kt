@@ -34,6 +34,8 @@ data class ModelInfo(
         const val WHISPER_MODEL_ID = "small.en-q8_0"
         /** Hardcoded model ID for the GGML Silero VAD model used by whisper.cpp native VAD. */
         const val VAD_MODEL_ID = "silero-v6.2.0"
+        /** distil-whisper small.en Q8 model ID — 2× faster decoder, ~50% smaller than full small. */
+        const val DISTIL_WHISPER_MODEL_ID = "distil-small.en-q8_0"
         /** Moonshine Tiny model ID (fastest, English-only). */
         const val MOONSHINE_TINY_MODEL_ID = "moonshine-tiny"
         /** Moonshine Base model ID (higher accuracy, English-only). */
@@ -50,6 +52,16 @@ data class ModelInfo(
                 language = "en",
                 isQuantized = true,
                 sha256 = "67a179f608ea6114bd3fdb9060e762b588a3fb3bd00c4387971be4d177958067",
+                modelType = ModelType.WHISPER,
+            ),
+            ModelInfo(
+                id = DISTIL_WHISPER_MODEL_ID,
+                name = "Small English Fast (Distilled)",
+                sizeBytes = 130_000_000,
+                description = "distil-whisper small.en — 2× faster decoder, ~50% smaller, <1% WER difference on clean speech.",
+                downloadUrl = "$HF_WHISPER_BASE/ggml-distil-small.en-q8_0.bin",
+                language = "en",
+                isQuantized = true,
                 modelType = ModelType.WHISPER,
             ),
             ModelInfo(

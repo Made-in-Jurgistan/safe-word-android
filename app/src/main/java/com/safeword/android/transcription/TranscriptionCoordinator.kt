@@ -72,6 +72,8 @@ class TranscriptionCoordinator @Inject constructor(
         private const val NO_SPEECH_DENSITY_THRESHOLD = 0.05f
         /** Consecutive slow-RTF transcriptions required before switching backend. */
         private const val BACKEND_SWITCH_HYSTERESIS = 3
+        /** Maximum samples per transcription chunk (30 s at 16 kHz). Long audio is split to avoid Whisper encoder overflow. */
+        private const val CHUNK_SAMPLES = 30 * 16_000
     }
 
     private var recordingJob: Job? = null
@@ -547,6 +549,13 @@ class TranscriptionCoordinator @Inject constructor(
             }
         }
 
+        // Long recordings (>30 s) are chunked so Whisper's 30-s encoder window is not overflowed.
+        if (processedSamples.size > CHUNK_SAMPLES) {
+            Timber.i("[ENTER] TranscriptionCoordinator.transcribeChunked | sampleCount=%d", processedSamples.size)
+            transcribeChunked(processedSamples, pipelineStart)
+            return
+        }
+
         // Pad audio shorter than 1.25s to 1.25s (20000 samples @ 16kHz).
         // Whisper degrades noticeably on very short clips; silence padding is free.
         val minSamples = (AudioRecorder.SAMPLE_RATE * MIN_AUDIO_DURATION_SEC).toInt()
@@ -708,6 +717,139 @@ class TranscriptionCoordinator @Inject constructor(
             _state.value = TranscriptionState.Error(
                 message = e.message ?: context.getString(R.string.error_transcription_failed),
                 previousState = TranscriptionState.Transcribing(audioDurationMs),
+            )
+            scheduleResetToIdle()
+        }
+    }
+
+    // ── Chunked transcription ──
+
+    /**
+     * Transcribe audio longer than 30 s by splitting it into 30-s chunks.
+     * Each chunk is transcribed sequentially; the accumulated text is emitted
+     * progressively as [TranscriptionState.Transcribing] partial updates.
+     * Post-processing (ConfusionSetCorrector, TextPostProcessor) runs on the
+     * merged result. Voice-command detection is intentionally skipped for
+     * long recordings (no typical use case for commands in 30 s+ audio).
+     */
+    private suspend fun transcribeChunked(samples: FloatArray, pipelineStart: Long) {
+        val fullDurationMs = (samples.size.toLong() * 1000) / AudioRecorder.SAMPLE_RATE
+        _state.value = TranscriptionState.Transcribing(audioDurationMs = fullDurationMs)
+
+        val chunkCount = (samples.size + CHUNK_SAMPLES - 1) / CHUNK_SAMPLES
+        val chunkResults = mutableListOf<TranscriptionResult>()
+
+        try {
+            val settings = settingsRepository.settings.first()
+            val inputContext = currentInputContext()
+            val basePrompt = buildContextAwarePrompt(settings.initialPrompt, inputContext)
+
+            for (i in 0 until chunkCount) {
+                val from = i * CHUNK_SAMPLES
+                val to = minOf(from + CHUNK_SAMPLES, samples.size)
+                val chunk = samples.copyOfRange(from, to)
+                val chunkDurationSec = chunk.size.toFloat() / AudioRecorder.SAMPLE_RATE
+                val whisperThreads = InferenceConfig.optimalWhisperThreads(chunkDurationSec)
+
+                // Use previous chunk text as continuation prompt for better coherence.
+                val chunkPrompt = if (i == 0) {
+                    basePrompt
+                } else {
+                    chunkResults.takeLast(2).joinToString(" ") { it.text.takeLast(200) }
+                }
+
+                val config = TranscriptionConfig(
+                    language = "en",
+                    nThreads = whisperThreads,
+                    translate = false,
+                    autoDetect = false,
+                    initialPrompt = chunkPrompt,
+                    useVad = false,
+                    noSpeechThreshold = settings.noSpeechThreshold,
+                    logprobThreshold = settings.logprobThreshold,
+                    entropyThreshold = settings.entropyThreshold,
+                )
+
+                val accSegBuffer = StringBuilder()
+                val chunkResult = whisperEngine.transcribeStreaming(chunk, config) { seg ->
+                    accSegBuffer.append(seg)
+                    val preview = (chunkResults.map { it.text } + accSegBuffer.toString())
+                        .joinToString(" ")
+                        .trim()
+                    _state.value = TranscriptionState.Transcribing(
+                        audioDurationMs = fullDurationMs,
+                        partialText = preview,
+                    )
+                }
+                if (chunkResult.text.isNotBlank()) chunkResults.add(chunkResult)
+
+                val chunkPreview = chunkResults.joinToString(" ") { it.text }.trim()
+                _state.value = TranscriptionState.Transcribing(
+                    audioDurationMs = fullDurationMs,
+                    partialText = chunkPreview,
+                )
+                Timber.i("[PERF] transcribeChunked | chunk=%d/%d chunkMs=%d textLen=%d",
+                    i + 1, chunkCount, chunkResult.inferenceDurationMs, chunkResult.text.length)
+            }
+
+            val mergedText = chunkResults.joinToString(" ") { it.text }.trim()
+            val avgLogprob = if (chunkResults.isEmpty()) 0f else chunkResults.map { it.avgLogprob }.average().toFloat()
+            val pipelineMs = (System.nanoTime() - pipelineStart) / 1_000_000
+
+            val rawResult = TranscriptionResult(
+                text = mergedText,
+                audioDurationMs = fullDurationMs,
+                inferenceDurationMs = pipelineMs,
+                avgLogprob = avgLogprob,
+            )
+
+            val correctedText = ConfusionSetCorrector.apply(
+                rawResult.text,
+                ConfusionSetCorrector.Context(
+                    packageName = inputContext.packageName,
+                    hintText = inputContext.hintText,
+                    className = inputContext.className,
+                    avgLogprob = rawResult.avgLogprob,
+                ),
+            )
+            val correctedResult = if (correctedText != rawResult.text) rawResult.copy(text = correctedText) else rawResult
+
+            _state.value = TranscriptionState.Done(correctedResult)
+            _history.value = _history.value + correctedResult
+            Timber.i("[EXIT] TranscriptionCoordinator.transcribeChunked | chunks=%d pipelineMs=%d textLen=%d",
+                chunkCount, pipelineMs, correctedResult.text.length)
+
+            val cleanedText = TextPostProcessor.process(correctedResult.text)
+            val finalResult = if (cleanedText != correctedResult.text) {
+                val normalized = correctedResult.copy(text = cleanedText)
+                _state.value = TranscriptionState.Done(normalized)
+                _history.value = _history.value.dropLast(1) + normalized
+                normalized
+            } else {
+                correctedResult
+            }
+
+            val rtf = if (fullDurationMs > 0) pipelineMs.toFloat() / fullDurationMs else 0f
+            maybeSwitchBackendForLatency(audioDurationMs = fullDurationMs, rtf = rtf)
+            scheduleResetToIdle()
+
+            if (finalResult.text.isNotBlank()) {
+                var insertedDirectly = false
+                if (settings.autoInsertText && SafeWordAccessibilityService.isActive()) {
+                    insertedDirectly = SafeWordAccessibilityService.insertText(finalResult.text)
+                }
+                if (settings.autoCopyToClipboard && !insertedDirectly) {
+                    copyToClipboard(finalResult.text)
+                }
+                if (settings.saveToHistory) saveToDatabase(finalResult)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Timber.e(e, "[ERROR] TranscriptionCoordinator.transcribeChunked | chunks=%d", chunkCount)
+            _state.value = TranscriptionState.Error(
+                message = e.message ?: context.getString(R.string.error_transcription_failed),
+                previousState = TranscriptionState.Transcribing(fullDurationMs),
             )
             scheduleResetToIdle()
         }

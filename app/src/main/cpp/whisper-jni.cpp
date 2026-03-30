@@ -15,6 +15,8 @@
 #include <algorithm>
 #include <cstring>
 #include <time.h>
+#include <sched.h>
+#include <unistd.h>
 
 #define TAG "WhisperJNI"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -23,6 +25,45 @@
 
 #include "whisper.h"
 #include "ggml-backend.h"
+
+/**
+ * Pin the calling thread and its worker pool to the highest-frequency CPU cores.
+ * Reads /sys/devices/system/cpu/cpuN/cpufreq/cpuinfo_max_freq for each CPU,
+ * sorts descending, and pins the top n_threads cores via sched_setaffinity.
+ * Silently no-ops if sysfs is unavailable (emulator, locked devices).
+ */
+static void pin_to_big_cores(int n_threads)
+{
+    int n_cpus = static_cast<int>(sysconf(_SC_NPROCESSORS_CONF));
+    if (n_cpus <= 0) return;
+
+    std::vector<std::pair<int, long>> cores;
+    cores.reserve(static_cast<size_t>(n_cpus));
+    for (int i = 0; i < n_cpus; ++i) {
+        char path[128];
+        long freq = 0;
+        snprintf(path, sizeof(path),
+            "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", i);
+        FILE *f = fopen(path, "r");
+        if (f) { fscanf(f, "%ld", &freq); fclose(f); }
+        cores.push_back({i, freq});
+    }
+    std::sort(cores.begin(), cores.end(),
+        [](const std::pair<int,long>& a, const std::pair<int,long>& b) {
+            return a.second > b.second;
+        });
+
+    cpu_set_t cpuset;
+    CPU_ZERO(&cpuset);
+    int pinned = 0;
+    for (const auto& core : cores) {
+        if (pinned >= n_threads) break;
+        if (core.second > 0) { CPU_SET(core.first, &cpuset); ++pinned; }
+    }
+    if (pinned > 0) {
+        sched_setaffinity(0, sizeof(cpuset), &cpuset);
+    }
+}
 
 extern "C"
 {
@@ -298,6 +339,7 @@ extern "C"
 
         // Clamp thread count to reasonable range
         int threads = std::max(1, std::min(static_cast<int>(nThreads), 16));
+        pin_to_big_cores(threads);
 
         // Configure full params (mirrors desktop Safe Word defaults)
         struct whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
@@ -475,6 +517,7 @@ extern "C"
         }
 
         int threads = std::max(1, std::min(static_cast<int>(nThreads), 16));
+        pin_to_big_cores(threads);
 
         struct whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
         params.print_realtime = false;
