@@ -234,7 +234,7 @@ class SileroVadDetector @Inject constructor(
             stateFloatBuffer,
             stateShape,
         )
-        val sr = srTensor ?: return@synchronized -1f
+        val sr = srTensor ?: return@withLock -1f
 
         val prob: Float
         try {

@@ -2,7 +2,6 @@ package com.safeword.android.transcription
 
 import timber.log.Timber
 import com.safeword.android.transcription.VoiceCommandRegistry.COMMAND_MAP
-import com.safeword.android.transcription.VoiceCommandRegistry.COMMAND_STEMS
 import com.safeword.android.transcription.VoiceCommandRegistry.STRUCTURAL_COMMANDS_BY_LENGTH_DESC
 import javax.inject.Inject
 import javax.inject.Singleton
