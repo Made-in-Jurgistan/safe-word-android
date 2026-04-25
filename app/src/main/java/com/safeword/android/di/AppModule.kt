@@ -1,13 +1,13 @@
 ﻿package com.safeword.android.di
 
 import android.content.Context
+import android.content.pm.PackageManager
 import androidx.room.Room
-import androidx.room.migration.Migration
+import androidx.room.RoomDatabase
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.safeword.android.data.db.MicAccessEventDao
+import com.safeword.android.data.db.PersonalVocabularyDao
 import com.safeword.android.data.db.SafeWordDatabase
-import com.safeword.android.data.db.TranscriptionDao
-import com.safeword.android.transcription.TranscriptionEngine
-import com.safeword.android.transcription.WhisperEngine
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -23,64 +23,47 @@ import javax.inject.Singleton
 @InstallIn(SingletonComponent::class)
 object AppModule {
 
-    private val MIGRATION_1_2 = object : Migration(1, 2) {
-        override fun migrate(db: SupportSQLiteDatabase) {
-            db.execSQL(
-                "CREATE TABLE IF NOT EXISTS `user_words` (" +
-                    "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
-                    "`word` TEXT NOT NULL, " +
-                    "`frequency` INTEGER NOT NULL, " +
-                    "`lastUsedAt` INTEGER NOT NULL)",
-            )
-            db.execSQL(
-                "CREATE UNIQUE INDEX IF NOT EXISTS `index_user_words_word` ON `user_words` (`word`)",
-            )
-            db.execSQL(
-                "CREATE TABLE IF NOT EXISTS `ngrams` (" +
-                    "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
-                    "`contextWord` TEXT NOT NULL, " +
-                    "`nextWord` TEXT NOT NULL, " +
-                    "`count` INTEGER NOT NULL, " +
-                    "`lastUsedAt` INTEGER NOT NULL)",
-            )
-            db.execSQL(
-                "CREATE UNIQUE INDEX IF NOT EXISTS `index_ngrams_contextWord_nextWord` " +
-                    "ON `ngrams` (`contextWord`, `nextWord`)",
-            )
-            db.execSQL(
-                "CREATE INDEX IF NOT EXISTS `index_ngrams_contextWord` ON `ngrams` (`contextWord`)",
-            )
-        }
-    }
-
-    private val MIGRATION_2_3 = object : Migration(2, 3) {
-        override fun migrate(db: SupportSQLiteDatabase) {
-            db.execSQL("DROP TABLE IF EXISTS `user_words`")
-            db.execSQL("DROP TABLE IF EXISTS `ngrams`")
-        }
-    }
-
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): SafeWordDatabase {
         Timber.d("[INIT] AppModule.provideDatabase | creating Room database")
+
         return Room.databaseBuilder(
             context,
             SafeWordDatabase::class.java,
             "safeword.db",
         )
-        .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+        .addMigrations(
+            SafeWordDatabase.MIGRATION_1_2,
+            SafeWordDatabase.MIGRATION_2_3,
+            SafeWordDatabase.MIGRATION_3_4,
+        )
+        // Destructive fallback handles downgrade scenarios (e.g. installing an older build
+        // over a dev build at a higher schema version that was never shipped).
+        // This is safe — all Room tables are rebuilt from scratch and re-populated from the
+        // network/assets on next use. User personal vocabulary is lost, which is acceptable
+        // compared to a crash on every launch.
+        .fallbackToDestructiveMigration(dropAllTables = true)
+        .setJournalMode(RoomDatabase.JournalMode.WRITE_AHEAD_LOGGING)
+        .addCallback(object : RoomDatabase.Callback() {
+            override fun onOpen(db: SupportSQLiteDatabase) {
+                super.onOpen(db)
+                // Tighten WAL auto-checkpoint from SQLite's default 1000 pages to 100
+                // so the WAL file is truncated aggressively for this small-schema database.
+                // Use rawQuery instead of execSQL to avoid context issues in onOpen callback.
+                db.query("PRAGMA wal_autocheckpoint=100").close()
+            }
+        })
         .build()
     }
 
     @Provides
     @Singleton
-    fun provideTranscriptionDao(database: SafeWordDatabase): TranscriptionDao {
-        Timber.d("[INIT] AppModule.provideTranscriptionDao")
-        return database.transcriptionDao()
-    }
+    fun providePersonalVocabularyDao(database: SafeWordDatabase): PersonalVocabularyDao =
+        database.personalVocabularyDao()
 
     @Provides
     @Singleton
-    fun provideTranscriptionEngine(engine: WhisperEngine): TranscriptionEngine = engine
+    fun provideMicAccessEventDao(database: SafeWordDatabase): MicAccessEventDao =
+        database.micAccessEventDao()
 }

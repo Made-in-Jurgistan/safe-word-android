@@ -1,91 +1,73 @@
-﻿cmake_minimum_required(VERSION 3.22.1)
-project(whisper-jni)
+cmake_minimum_required(VERSION 3.22.1)
+project(safeword-moonshine CXX)
 
-# ──────────────────────────────────────────────
-# whisper.cpp JNI bridge for Safe Word Android
-# ──────────────────────────────────────────────
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# ─── ONNX Runtime path override ───────────────────────────────────────────────
+# moonshine-core's third-party/onnxruntime/lib/android/arm64/ directory is
+# intentionally empty. Point cmake to the libonnxruntime.so already extracted
+# from the onnxruntime-android AAR into jniLibs.
 #
-# Requires whisper.cpp source at app/src/main/cpp/whisper.cpp/
-#   git clone --depth 1 https://github.com/ggml-org/whisper.cpp.git app/src/main/cpp/whisper.cpp
+# MUST be set BEFORE add_subdirectory so that the downstream script
+#   moonshine-core/core/third-party/onnxruntime/find-ort-library-path.cmake
+# (which uses `set(... CACHE INTERNAL "")` without FORCE) cannot override it.
+set(ONNXRUNTIME_LIB_PATH
+    "${CMAKE_CURRENT_SOURCE_DIR}/../jniLibs/arm64-v8a/libonnxruntime.so"
+    CACHE INTERNAL "" FORCE)
 
-set(WHISPER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/whisper.cpp)
+# moonshine-core links the TTS ONNX module (moonshine_tts_ort) unconditionally on
+# Android. MOONSHINE_TTS_BUILD_ONNX=ON is therefore required to satisfy that link —
+# Safe Word does not invoke TTS at runtime. Because ONNXRUNTIME_LIB_PATH is set
+# above, moonshine-tts-onnxruntime.cmake reuses our pre-built libonnxruntime.so
+# and skips the host-side library discovery that would fail on Android.
+set(MOONSHINE_TTS_BUILD_ONNX ON CACHE BOOL "" FORCE)
 
-if(NOT EXISTS "${WHISPER_DIR}/CMakeLists.txt")
-    message(FATAL_ERROR
-        "whisper.cpp not found at ${WHISPER_DIR}. "
-        "Run: git clone --depth 1 https://github.com/ggml-org/whisper.cpp.git ${WHISPER_DIR}")
+# ─── moonshine-core (open-source STT core library) ────────────────────────────
+add_subdirectory(
+    moonshine-core/core
+    ${CMAKE_CURRENT_BINARY_DIR}/moonshine-core-build)
+
+# moonshine-core's build system unconditionally adds the SDK JNI bridge target
+# (android/moonshine-jni → libmoonshine-jni.so) on Android. That target belongs
+# to the commercial ai.moonshine:moonshine-voice AAR namespace; exclude it so
+# Gradle does not package it alongside our own bridge.
+if(TARGET moonshine-jni)
+    set_target_properties(moonshine-jni PROPERTIES EXCLUDE_FROM_ALL TRUE)
 endif()
 
-message(STATUS "Building with whisper.cpp from ${WHISPER_DIR}")
+# ─── Android dead-code stub injection ─────────────────────────────────────────
+# moonshine-model.cpp, word-alignment.cpp, and cosine-distance.cpp are excluded
+# from MOONSHINE_SRC_FILES on Android (see moonshine-core/core/CMakeLists.txt).
+# transcriber.cpp still compiles the non-streaming else-branches which reference
+# MoonshineModel symbols, so we inject minimal linker stubs here instead.
+set(CORE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/moonshine-core/core)
+target_sources(moonshine PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/moonshine-android-stubs.cpp)
+target_include_directories(moonshine PRIVATE ${CORE_DIR})
 
-# ── CRITICAL: Force Release build for whisper.cpp (10-50x faster than Debug) ──
-set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
-set(CMAKE_C_FLAGS_RELEASE "-O3 -DNDEBUG" CACHE STRING "" FORCE)
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG" CACHE STRING "" FORCE)
-
-# Configure whisper.cpp build for Android
-set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
-set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(WHISPER_BUILD_SERVER OFF CACHE BOOL "" FORCE)
-
-# ── Multi-ISA CPU dispatch (ARMv8.0, ARMv8.2+dotprod, ARMv8.2+i8mm) ──
-# Compiles multiple ggml-cpu variant .so files; runtime picks the fastest.
-# Requires GGML_BACKEND_DL so variants are dlopen'd, not statically linked.
-set(GGML_CPU_ALL_VARIANTS ON CACHE BOOL "" FORCE)
-set(GGML_BACKEND_DL ON CACHE BOOL "" FORCE)
-
-# ── ARM NEON SIMD acceleration (3-5x faster on ARM devices) ──
-set(GGML_CPU ON CACHE BOOL "" FORCE)
-set(GGML_NEON ON CACHE BOOL "" FORCE)
-set(GGML_CPU_AARCH64 ON CACHE BOOL "" FORCE)
-
-# ── OpenMP for parallel GGML ops on ARM64 (10-25% faster multi-threaded) ──
-if(CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
-    set(GGML_OPENMP ON CACHE BOOL "" FORCE)
-else()
-    set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
+# Workaround: NDK 28.2 clang 19.0.1 (LLVM 19) crashes with a frontend SIGSEGV
+# generating standalone DWARF debug info for some moonshine-tts C++20 lang-specific
+# files (confirmed on turkish.cpp; potentially others). -fno-standalone-debug switches
+# from DW_AT_inline "abstract origins" to line-table-only DWARF, which avoids the
+# crash. Safe Word never debugs TTS C++ directly, so this has zero runtime impact.
+if(TARGET moonshine_tts_core)
+    target_compile_options(moonshine_tts_core PRIVATE -fno-standalone-debug)
 endif()
 
-# Disable unused backends
-set(GGML_METAL OFF CACHE BOOL "" FORCE)
-set(GGML_CUDA OFF CACHE BOOL "" FORCE)
-set(GGML_SYCL OFF CACHE BOOL "" FORCE)
+# ─── Safe Word JNI bridge ─────────────────────────────────────────────────────
+add_library(moonshine-bridge SHARED moonshine-bridge.cpp)
 
-# ── Vulkan GPU acceleration (5-10x faster inference on supported devices) ──
-# minSdk 33 guarantees Vulkan 1.1+; runtime fallback to CPU if GPU init fails.
-set(GGML_VULKAN ON CACHE BOOL "" FORCE)
-
-# NDK ships vulkan.h (C) but NOT vulkan.hpp (C++ wrapper) which ggml-vulkan requires.
-# Fetch the official Vulkan-Headers from Khronos to provide vulkan.hpp.
-include(FetchContent)
-FetchContent_Declare(
-    VulkanHeaders
-    GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Headers.git
-    GIT_TAG v1.4.309
-    GIT_SHALLOW TRUE
-)
-FetchContent_Populate(VulkanHeaders)
-set(Vulkan_INCLUDE_DIR "${vulkanheaders_SOURCE_DIR}/include" CACHE PATH "" FORCE)
-message(STATUS "Using fetched Vulkan headers: ${vulkanheaders_SOURCE_DIR}/include")
-
-# Help FindVulkan.cmake locate NDK's glslc shader compiler (host tool, not in sysroot)
-if(CMAKE_ANDROID_NDK)
-    file(GLOB _glslc_candidates "${CMAKE_ANDROID_NDK}/shader-tools/*/glslc*")
-    if(_glslc_candidates)
-        list(GET _glslc_candidates 0 _glslc_path)
-        set(Vulkan_GLSLC_EXECUTABLE "${_glslc_path}" CACHE FILEPATH "" FORCE)
-        message(STATUS "Using NDK glslc: ${_glslc_path}")
-    endif()
+# Release optimizations: LTO + hidden visibility to reduce .so size and improve
+# inlining across translation units. Only applied for non-Debug builds.
+if(NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set_property(TARGET moonshine-bridge PROPERTY INTERPROCEDURAL_OPTIMIZATION ON)
+    target_compile_options(moonshine-bridge PRIVATE -fvisibility=hidden)
 endif()
 
-add_subdirectory(${WHISPER_DIR} whisper.cpp)
+# moonshine headers are PRIVATE in core/CMakeLists.txt; add them explicitly so
+# moonshine-c-api.h is visible to our translation unit.
+target_include_directories(moonshine-bridge PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/moonshine-core/core)
 
-# Build the whisper JNI bridge shared library
-add_library(whisper-jni SHARED whisper-jni.cpp)
-target_link_libraries(whisper-jni whisper ggml log android)
-target_include_directories(whisper-jni PRIVATE
-    ${WHISPER_DIR}/include
-    ${WHISPER_DIR}/ggml/include
-)
-target_compile_options(whisper-jni PRIVATE -O3 -DNDEBUG -std=c++17 -fPIC)
+target_link_libraries(moonshine-bridge PRIVATE moonshine log)

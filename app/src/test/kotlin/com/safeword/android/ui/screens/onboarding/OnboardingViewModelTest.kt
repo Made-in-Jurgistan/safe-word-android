@@ -1,128 +1,150 @@
 package com.safeword.android.ui.screens.onboarding
 
-import app.cash.turbine.test
+import android.content.Context
 import com.safeword.android.data.model.ModelDownloadState
 import com.safeword.android.data.model.ModelRepository
+import com.safeword.android.data.settings.OnboardingRepository
 import com.safeword.android.data.settings.SettingsRepository
+import com.safeword.android.service.AccessibilityStateHolder
+import com.safeword.android.util.InstallSourceDetector
 import com.safeword.android.util.MainDispatcherRule
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
-import io.mockk.just
 import io.mockk.mockk
-import io.mockk.Runs
+import io.mockk.mockkObject
+import io.mockk.unmockkObject
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
+import org.junit.After
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertTrue
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class OnboardingViewModelTest {
 
     @get:Rule
-    val mainDispatcherRule = MainDispatcherRule()
+    val dispatcherRule = MainDispatcherRule()
 
+    private lateinit var onboardingRepository: OnboardingRepository
     private lateinit var settingsRepository: SettingsRepository
     private lateinit var modelRepository: ModelRepository
-    private lateinit var viewModel: OnboardingViewModel
+    private lateinit var accessibilityState: AccessibilityStateHolder
+    private lateinit var appContext: Context
 
-    private val downloadStates = MutableStateFlow<Map<String, ModelDownloadState>>(emptyMap())
-    private val onboardingCompleteFlow = MutableStateFlow(false)
+    private fun createViewModel(): OnboardingViewModel = OnboardingViewModel(
+        onboardingRepository, settingsRepository, modelRepository, accessibilityState, appContext,
+    )
 
     @Before
-    fun setUp() {
-        settingsRepository = mockk {
-            every { onboardingComplete } returns onboardingCompleteFlow
-            coEvery { updateOnboardingComplete(any()) } just Runs
-            coEvery { updateOverlayEnabled(any()) } just Runs
-        }
-        modelRepository = mockk {
-            every { isModelDownloaded(OnboardingViewModel.DEFAULT_MODEL_ID) } returns false
-            every { refreshStates() } just Runs
-        }
-        every { modelRepository.downloadStates } returns downloadStates
+    fun setup() {
+        onboardingRepository = mockk(relaxed = true)
+        settingsRepository = mockk(relaxed = true)
+        modelRepository = mockk(relaxed = true)
+        accessibilityState = mockk(relaxed = true)
+        appContext = mockk(relaxed = true)
 
-        viewModel = OnboardingViewModel(settingsRepository, modelRepository)
+        // Satisfy init block subscriptions
+        every { onboardingRepository.onboardingComplete } returns flowOf(false)
+        every { onboardingRepository.skippedSteps } returns flowOf(emptySet())
+        every { onboardingRepository.onboardingStep } returns flowOf(0)
+        every { modelRepository.downloadStates } returns MutableStateFlow(emptyMap())
+        coEvery { modelRepository.isModelDownloaded(any()) } returns true
+
+        every { accessibilityState.serviceActive } returns MutableStateFlow(false)
+        every { accessibilityState.isActive() } returns false
+
+        mockkObject(InstallSourceDetector)
+        every { InstallSourceDetector.isSideloaded(any()) } returns false
+    }
+
+    @After
+    fun tearDown() {
+        unmockkObject(InstallSourceDetector)
     }
 
     @Test
-    fun `isOnboardingComplete returns false when prefs flag not set`() {
+    fun `isOnboardingComplete returns false when not completed`() = runTest {
+        val viewModel = createViewModel()
+        advanceUntilIdle()
         assertFalse(viewModel.isOnboardingComplete())
     }
 
     @Test
-    fun `markOnboardingComplete writes flag via settings repository`() =
-        runTest(mainDispatcherRule.testDispatcher) {
-            viewModel.markOnboardingComplete()
-            advanceUntilIdle()
-            coVerify { settingsRepository.updateOnboardingComplete(true) }
-        }
-
-    @Test
-    fun `modelReady is false initially when model not downloaded`() {
-        assertFalse(viewModel.modelReady.value)
+    fun `restoreStep returns saved step from repository`() = runTest {
+        every { onboardingRepository.onboardingStep } returns flowOf(2)
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+        assertEquals(2, viewModel.restoreStep())
     }
 
     @Test
-    fun `downloadState transitions to Downloaded when repository emits Downloaded`() =
-        runTest(mainDispatcherRule.testDispatcher) {
-            viewModel.modelReady.test {
-                assertFalse(awaitItem())
-                downloadStates.value = mapOf(
-                    OnboardingViewModel.DEFAULT_MODEL_ID to ModelDownloadState.Downloaded,
-                )
-                advanceUntilIdle()
-                assertTrue(awaitItem())
-                cancelAndIgnoreRemainingEvents()
-            }
-        }
+    fun `restoreStep defaults to 1 when saved step is 0`() = runTest {
+        every { onboardingRepository.onboardingStep } returns flowOf(0)
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+        assertEquals(1, viewModel.restoreStep())
+    }
 
     @Test
-    fun `ensureModelDownloaded triggers download and sets modelReady on success`() =
-        runTest(mainDispatcherRule.testDispatcher) {
-            coEvery {
-                modelRepository.downloadModel(OnboardingViewModel.DEFAULT_MODEL_ID)
-            } returns true
+    fun `persistStep calls repository updateOnboardingStep`() = runTest {
+        val viewModel = createViewModel()
+        advanceUntilIdle()
 
-            viewModel.ensureModelDownloaded()
-            advanceUntilIdle()
+        viewModel.persistStep(3)
+        advanceUntilIdle()
 
-            assertTrue(viewModel.modelReady.value)
-        }
+        coVerify { onboardingRepository.updateOnboardingStep(3) }
+    }
 
     @Test
-    fun `ensureModelDownloaded is idempotent - concurrent calls trigger download once`() =
-        runTest(mainDispatcherRule.testDispatcher) {
-            var callCount = 0
-            coEvery { modelRepository.downloadModel(OnboardingViewModel.DEFAULT_MODEL_ID) } coAnswers {
-                callCount++
-                true
-            }
+    fun `skipStep updates skipped set and calls repository`() = runTest {
+        val viewModel = createViewModel()
+        advanceUntilIdle()
 
-            viewModel.ensureModelDownloaded()
-            viewModel.ensureModelDownloaded()
-            advanceUntilIdle()
+        viewModel.skipStep(OnboardingViewModel.STEP_OVERLAY)
+        advanceUntilIdle()
 
-            assertEquals(1, callCount)
-        }
+        coVerify { onboardingRepository.updateSkippedSteps(setOf(OnboardingViewModel.STEP_OVERLAY)) }
+    }
 
     @Test
-    fun `ensureModelDownloaded is no-op when model already ready`() =
-        runTest(mainDispatcherRule.testDispatcher) {
-            every { modelRepository.isModelDownloaded(OnboardingViewModel.DEFAULT_MODEL_ID) } returns true
-            val vm = OnboardingViewModel(settingsRepository, modelRepository)
-            advanceUntilIdle()
+    fun `markOnboardingComplete calls repository`() = runTest {
+        val viewModel = createViewModel()
+        advanceUntilIdle()
 
-            assertTrue(vm.modelReady.value)
+        viewModel.markOnboardingComplete()
+        advanceUntilIdle()
 
-            vm.ensureModelDownloaded()
-            advanceUntilIdle()
+        coVerify { onboardingRepository.updateOnboardingComplete(true) }
+    }
 
-            coVerify(exactly = 0) { modelRepository.downloadModel(any()) }
-        }
+    @Test
+    fun `markOnboardingComplete enables overlay when not skipped`() = runTest {
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+
+        viewModel.markOnboardingComplete()
+        advanceUntilIdle()
+
+        coVerify { settingsRepository.updateOverlayEnabled(true) }
+    }
+
+    @Test
+    fun `markOnboardingComplete does not enable overlay when skipped`() = runTest {
+        every { onboardingRepository.skippedSteps } returns flowOf(setOf(OnboardingViewModel.STEP_OVERLAY))
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+
+        viewModel.markOnboardingComplete()
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { settingsRepository.updateOverlayEnabled(any()) }
+    }
 }

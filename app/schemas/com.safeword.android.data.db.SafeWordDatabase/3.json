@@ -2,11 +2,11 @@
   "formatVersion": 1,
   "database": {
     "version": 3,
-    "identityHash": "7e1674c14706237e851c2956b7306b07",
+    "identityHash": "0adab2f57abe5caf2e1dcbacb4f44a2f",
     "entities": [
       {
-        "tableName": "transcriptions",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `text` TEXT NOT NULL, `audioDurationMs` INTEGER NOT NULL, `inferenceDurationMs` INTEGER NOT NULL, `language` TEXT NOT NULL, `createdAt` INTEGER NOT NULL)",
+        "tableName": "personal_vocabulary",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `phrase` TEXT NOT NULL, `source` TEXT NOT NULL, `confirmation_count` INTEGER NOT NULL, `created_at` INTEGER NOT NULL, `last_used_at` INTEGER NOT NULL, `context_hint` TEXT, `app_package` TEXT, `is_dormant` INTEGER NOT NULL, `written_form` TEXT)",
         "fields": [
           {
             "fieldPath": "id",
@@ -15,34 +15,55 @@
             "notNull": true
           },
           {
-            "fieldPath": "text",
-            "columnName": "text",
+            "fieldPath": "phrase",
+            "columnName": "phrase",
             "affinity": "TEXT",
             "notNull": true
           },
           {
-            "fieldPath": "audioDurationMs",
-            "columnName": "audioDurationMs",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "inferenceDurationMs",
-            "columnName": "inferenceDurationMs",
-            "affinity": "INTEGER",
-            "notNull": true
-          },
-          {
-            "fieldPath": "language",
-            "columnName": "language",
+            "fieldPath": "source",
+            "columnName": "source",
             "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "confirmationCount",
+            "columnName": "confirmation_count",
+            "affinity": "INTEGER",
             "notNull": true
           },
           {
             "fieldPath": "createdAt",
-            "columnName": "createdAt",
+            "columnName": "created_at",
             "affinity": "INTEGER",
             "notNull": true
+          },
+          {
+            "fieldPath": "lastUsedAt",
+            "columnName": "last_used_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "contextHint",
+            "columnName": "context_hint",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "appPackage",
+            "columnName": "app_package",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "isDormant",
+            "columnName": "is_dormant",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "writtenForm",
+            "columnName": "written_form",
+            "affinity": "TEXT"
           }
         ],
         "primaryKey": {
@@ -51,14 +72,62 @@
             "id"
           ]
         },
-        "indices": [],
-        "foreignKeys": []
+        "indices": [
+          {
+            "name": "index_personal_vocabulary_phrase",
+            "unique": true,
+            "columnNames": [
+              "phrase"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_personal_vocabulary_phrase` ON `${TABLE_NAME}` (`phrase`)"
+          }
+        ]
+      },
+      {
+        "tableName": "mic_access_events",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `purpose` TEXT NOT NULL, `started_at` INTEGER NOT NULL, `stopped_at` INTEGER, `duration_ms` INTEGER)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "purpose",
+            "columnName": "purpose",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "startedAt",
+            "columnName": "started_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "stoppedAt",
+            "columnName": "stopped_at",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "durationMs",
+            "columnName": "duration_ms",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        }
       }
     ],
-    "views": [],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '7e1674c14706237e851c2956b7306b07')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '0adab2f57abe5caf2e1dcbacb4f44a2f')"
     ]
   }
 }

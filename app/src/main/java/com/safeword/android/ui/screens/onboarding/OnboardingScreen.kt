@@ -1,33 +1,25 @@
 package com.safeword.android.ui.screens.onboarding
 
 import android.Manifest
-import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.net.toUri
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -38,11 +30,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -50,30 +43,26 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
-import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.res.painterResource
 import com.safeword.android.R
 import com.safeword.android.data.model.ModelDownloadState
-import com.safeword.android.service.SafeWordAccessibilityService
-import com.safeword.android.ui.components.GlassCard
-import com.safeword.android.ui.components.GlassListItem
-import com.safeword.android.ui.components.GlassStepBadge
 import com.safeword.android.ui.components.GlassSurface
-import com.safeword.android.ui.theme.DoneGreen
 import com.safeword.android.ui.theme.GlassDimText
-import com.safeword.android.ui.theme.GlassWhite
+import com.safeword.android.ui.theme.SilverDim
+import kotlinx.coroutines.delay
 
 /**
  * OnboardingScreen — sequential guided first-launch setup.
  *
- * Steps (must be completed in order):
- * 1. Grant microphone permission  -> "Allow"
- * 2. Grant notification permission (POST_NOTIFICATIONS) -> "Allow"
- * 3. Grant overlay permission (SYSTEM_ALERT_WINDOW) -> "Allow"
- * 4. Enable accessibility service -> "Enable"
- * 5. Download speech model -> auto-downloads, confirmed when done
+ * Each step occupies the full screen. The user must confirm enablement
+ * (via the Continue button) before advancing to the next step.
  *
- * Each step must be confirmed before the next is shown.
+ * Step order (easiest first → hardest last):
+ * 0. Welcome
+ * 1. Microphone — one-tap system dialog
+ * 2. Speech model download — auto-background download
+ * 3. Overlay — requires leaving app (skippable)
+ * 4. Accessibility — requires leaving app; adaptive restriction help for sideloaded installs
+ * 5. Completion
  */
 @Composable
 fun OnboardingScreen(
@@ -84,10 +73,48 @@ fun OnboardingScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val downloadState by viewModel.downloadState.collectAsStateWithLifecycle()
     val modelReady by viewModel.modelReady.collectAsStateWithLifecycle()
-    val totalSteps = 5
+    val skippedSteps by viewModel.skippedSteps.collectAsStateWithLifecycle()
 
-    // Current step (1-based): 1=mic, 2=notifications, 3=overlay, 4=accessibility, 5=download model
-    var currentStep by rememberSaveable { mutableIntStateOf(1) }
+    val visibleSteps = remember {
+        listOf(STEP_MIC, STEP_MODEL, OnboardingViewModel.STEP_OVERLAY, STEP_A11Y)
+    }
+
+    var currentStep by rememberSaveable { mutableIntStateOf(STEP_WELCOME) }
+    var stepRestored by rememberSaveable { mutableStateOf(false) }
+
+    // Advance to the next visible step after the given one.
+    val advanceFrom: (Int) -> Unit = remember(visibleSteps) {
+        { from: Int ->
+            val idx = visibleSteps.indexOf(from)
+            currentStep = if (idx in 0 until visibleSteps.lastIndex) {
+                visibleSteps[idx + 1]
+            } else {
+                STEP_COMPLETE
+            }
+        }
+    }
+
+    // Restore persisted step on first composition.
+    LaunchedEffect(Unit) {
+        if (!stepRestored) {
+            var saved = viewModel.restoreStep()
+            if (saved > 0) {
+                // Ensure restored step is reachable in the current flow.
+                if (saved !in visibleSteps && saved != STEP_WELCOME && saved != STEP_COMPLETE) {
+                    saved = visibleSteps.firstOrNull { it >= saved } ?: STEP_MIC
+                }
+                currentStep = saved
+            }
+            stepRestored = true
+        }
+    }
+
+    // Persist step whenever it changes (after restore).
+    LaunchedEffect(currentStep) {
+        if (stepRestored && currentStep in STEP_MIC..STEP_A11Y) {
+            viewModel.persistStep(currentStep)
+        }
+    }
 
     // --- Step 1: Mic permission ---
     var micGranted by remember {
@@ -99,308 +126,224 @@ fun OnboardingScreen(
 
     val micPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
-    ) { granted ->
-        micGranted = granted
-        if (granted) currentStep = 2
-    }
+    ) { granted -> micGranted = granted }
 
-    // --- Step 2: Notification permission ---
-    var notifGranted by remember {
-        mutableStateOf(
-            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
-                == PackageManager.PERMISSION_GRANTED,
-        )
-    }
-
-    val notifPermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { granted ->
-        notifGranted = granted
-        if (granted) currentStep = 3
-    }
-
-    // Auto-advance through already-granted permission steps.
-    // Single effect keyed on currentStep so step 2 re-evaluates after step 1 advances
-    // (fixes race when both permissions are pre-granted on the same composition frame).
-    LaunchedEffect(currentStep, micGranted, notifGranted) {
-        if (micGranted && currentStep == 1) currentStep = 2
-        if (notifGranted && currentStep == 2) currentStep = 3
-    }
-
-    // --- Step 3: Overlay permission ---
+    // --- Step 3: Overlay permission (refreshed on RESUMED) ---
     var overlayGranted by remember { mutableStateOf(Settings.canDrawOverlays(context)) }
 
     LaunchedEffect(lifecycleOwner) {
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             overlayGranted = Settings.canDrawOverlays(context)
-            if (overlayGranted && currentStep == 3) currentStep = 4
         }
     }
 
-    // --- Step 4: Accessibility service ---
-    var a11yEnabled by remember { mutableStateOf(SafeWordAccessibilityService.isActive()) }
+    // --- Step 4: Accessibility service + restricted-settings phase ---
+    // Collect reactively so the UI updates the moment onServiceConnected fires,
+    // even if that happens 200–500 ms after the activity has already resumed.
+    val a11yEnabled by viewModel.accessibilityActive.collectAsStateWithLifecycle()
+    var restrictedState by remember { mutableStateOf(viewModel.restrictedState()) }
 
     LaunchedEffect(lifecycleOwner) {
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-            a11yEnabled = SafeWordAccessibilityService.isActive()
-            if (a11yEnabled && currentStep == 4) currentStep = 5
+            restrictedState = viewModel.restrictedState()
         }
     }
 
-    // --- Step 5: Model download — start automatically when step 5 is reached ---
+    // Stuck detection timer for overlay and a11y steps.
+    var showNeedHelpLink by rememberSaveable { mutableStateOf(false) }
+    var showStuckHint by rememberSaveable { mutableStateOf(false) }
+    var showAdvancedStuckHint by rememberSaveable { mutableStateOf(false) }
+
     LaunchedEffect(currentStep) {
-        if (currentStep == 5) {
-            viewModel.ensureModelDownloaded()
+        showNeedHelpLink = false
+        showStuckHint = false
+        showAdvancedStuckHint = false
+        if (currentStep in setOf(OnboardingViewModel.STEP_OVERLAY, STEP_A11Y)) {
+            delay(STUCK_HINT_DELAY_MS)
+            showNeedHelpLink = true
+            delay(STUCK_TIMER_MS - STUCK_HINT_DELAY_MS)
+            showStuckHint = true
+            delay(30_000L) // 60s total
+            showAdvancedStuckHint = true
         }
     }
+
+    // Display helpers for the progress indicator.
+    val displayStepIndex = visibleSteps.indexOf(currentStep) // 0-based
+    val totalVisibleSteps = visibleSteps.size
 
     GlassSurface(modifier = Modifier.fillMaxSize()) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 24.dp, vertical = 32.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Top,
-        ) {
-            Image(
-                painter = painterResource(id = R.drawable.safeword_icon),
-                contentDescription = stringResource(R.string.app_name),
-                modifier = Modifier.size(144.dp),
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                stringResource(R.string.onboarding_subtitle),
-                style = MaterialTheme.typography.bodyLarge,
-                color = GlassDimText,
-                textAlign = TextAlign.Center,
-            )
+        AnimatedContent(
+            targetState = currentStep,
+            transitionSpec = {
+                val forward = targetState > initialState
+                val enterOffset: (Int) -> Int =
+                    if (forward) { w -> w / 3 } else { w -> -w / 3 }
+                val exitOffset: (Int) -> Int =
+                    if (forward) { w -> -w / 3 } else { w -> w / 3 }
+                val spec = spring<IntOffset>(dampingRatio = 0.8f, stiffness = 300f)
+                (slideInHorizontally(animationSpec = spec, initialOffsetX = enterOffset) + fadeIn())
+                    .togetherWith(slideOutHorizontally(animationSpec = spec, targetOffsetX = exitOffset) + fadeOut())
+            },
+            label = "onboardingPage",
+        ) { step ->
+            when (step) {
+                STEP_WELCOME -> WelcomePage(
+                    onStart = { currentStep = STEP_MIC },
+                )
 
-            Spacer(Modifier.height(28.dp))
-
-            LinearProgressIndicator(
-                progress = { currentStep.coerceIn(1, totalSteps).toFloat() / totalSteps },
-                modifier = Modifier.fillMaxWidth(),
-            )
-
-            // Progress indicator
-            Spacer(Modifier.height(16.dp))
-            StepProgressRow(currentStep = currentStep, totalSteps = totalSteps)
-
-            Spacer(Modifier.height(24.dp))
-
-            // Animated step content — only show the current step
-            AnimatedContent(
-                targetState = currentStep,
-                transitionSpec = {
-                    (slideInVertically { it / 3 } + fadeIn())
-                        .togetherWith(slideOutVertically { -it / 3 } + fadeOut())
-                },
-                label = "stepTransition",
-            ) { step ->
-                when (step) {
-                    1 -> StepCard(
-                        stepNumber = 1,
-                        title = stringResource(R.string.onboarding_step_mic_title),
-                        subtitle = stringResource(R.string.onboarding_step_mic_subtitle),
-                        isDone = micGranted,
-                        buttonLabel = stringResource(R.string.onboarding_step_mic_action),
-                        onAction = {
-                            micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                        },
-                    )
-
-                    2 -> StepCard(
-                        stepNumber = 2,
-                        title = stringResource(R.string.onboarding_step_notif_title),
-                        subtitle = stringResource(R.string.onboarding_step_notif_subtitle),
-                        isDone = notifGranted,
-                        buttonLabel = stringResource(R.string.onboarding_step_notif_action),
-                        onAction = {
-                            notifPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                        },
-                    )
-
-                    3 -> StepCard(
-                        stepNumber = 3,
-                        title = stringResource(R.string.onboarding_step_overlay_title),
-                        subtitle = stringResource(R.string.onboarding_step_overlay_subtitle),
-                        isDone = overlayGranted,
-                        buttonLabel = stringResource(R.string.onboarding_step_overlay_action),
-                        onAction = {
-                            val intent = Intent(
-                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                Uri.parse("package:${context.packageName}"),
+                STEP_MIC -> OnboardingStepPage(
+                    stepIndex = displayStepIndex,
+                    totalSteps = totalVisibleSteps,
+                    visibleSteps = visibleSteps,
+                    skippedSteps = skippedSteps,
+                    title = stringResource(R.string.onboarding_step_mic_title),
+                    description = stringResource(R.string.onboarding_step_mic_subtitle),
+                    isDone = micGranted,
+                    doneLabel = stringResource(R.string.onboarding_step_complete),
+                    onContinue = { advanceFrom(STEP_MIC) },
+                    continueEnabled = micGranted,
+                    whyText = stringResource(R.string.onboarding_step_mic_why),
+                ) {
+                    if (!micGranted) {
+                        Text(
+                            stringResource(R.string.onboarding_step_mic_priming),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = SilverDim,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 16.dp),
+                        )
+                        Button(
+                            onClick = {
+                                micPermissionLauncher.launch(
+                                    Manifest.permission.RECORD_AUDIO,
+                                )
+                            },
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 56.dp),
+                        ) {
+                            Text(
+                                stringResource(R.string.onboarding_step_mic_action),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
                             )
-                            context.startActivity(intent)
-                        },
-                    )
-
-                    4 -> StepCard(
-                        stepNumber = 4,
-                        title = stringResource(R.string.onboarding_step_a11y_title),
-                        subtitle = stringResource(R.string.onboarding_step_a11y_subtitle),
-                        isDone = a11yEnabled,
-                        buttonLabel = stringResource(R.string.onboarding_step_a11y_action),
-                        onAction = {
-                            context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                        },
-                    )
-
-                    5 -> DownloadStepCard(
-                        stepNumber = 5,
-                        downloadState = downloadState,
-                        modelReady = modelReady,
-                        onRetry = { viewModel.ensureModelDownloaded() },
-                    )
+                        }
+                    }
                 }
-            }
 
-            if (currentStep == 5 && modelReady) {
-                Spacer(Modifier.height(20.dp))
-                Button(
-                    onClick = {
+                STEP_MODEL -> ModelDownloadPage(
+                    stepIndex = displayStepIndex,
+                    totalSteps = totalVisibleSteps,
+                    visibleSteps = visibleSteps,
+                    skippedSteps = skippedSteps,
+                    downloadState = downloadState,
+                    modelReady = modelReady,
+                    onRetry = { viewModel.ensureModelDownloaded() },
+                    onContinue = { advanceFrom(STEP_MODEL) },
+                    whyText = stringResource(R.string.onboarding_step_model_why),
+                )
+
+                OnboardingViewModel.STEP_OVERLAY -> OnboardingStepPage(
+                    stepIndex = displayStepIndex,
+                    totalSteps = totalVisibleSteps,
+                    visibleSteps = visibleSteps,
+                    skippedSteps = skippedSteps,
+                    title = stringResource(R.string.onboarding_step_overlay_title),
+                    description = stringResource(R.string.onboarding_step_overlay_subtitle),
+                    isDone = overlayGranted,
+                    doneLabel = stringResource(R.string.onboarding_step_complete),
+                    onContinue = { advanceFrom(OnboardingViewModel.STEP_OVERLAY) },
+                    continueEnabled = overlayGranted,
+                    whyText = stringResource(R.string.onboarding_step_overlay_why),
+                    showNeedHelpLink = showNeedHelpLink && !overlayGranted,
+                    showStuckHint = showStuckHint && !overlayGranted,
+                    showAdvancedStuckHint = showAdvancedStuckHint && !overlayGranted,
+                    skippable = true,
+                    onSkip = {
+                        viewModel.skipStep(OnboardingViewModel.STEP_OVERLAY)
+                        advanceFrom(OnboardingViewModel.STEP_OVERLAY)
+                    },
+                ) {
+                    if (!overlayGranted) {
+                        Button(
+                            onClick = {
+                                context.startActivity(
+                                    Intent(
+                                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                        "package:${context.packageName}".toUri(),
+                                    ),
+                                )
+                            },
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 56.dp),
+                        ) {
+                            Text(
+                                stringResource(R.string.onboarding_step_overlay_action),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+
+                    }
+                }
+
+                STEP_A11Y -> AccessibilityPage(
+                    stepIndex = displayStepIndex,
+                    totalSteps = totalVisibleSteps,
+                    visibleSteps = visibleSteps,
+                    skippedSteps = skippedSteps,
+                    isDone = a11yEnabled,
+                    restrictedState = restrictedState,
+                    onOpenAccessibility = {
+                        // Best-effort: pass the fragment args key recognised by AOSP/Pixel builds
+                        // of Android 13+. On devices that support it, Settings navigates directly
+                        // to Safe Word's service detail page — the user taps one toggle and the
+                        // restriction dialog fires immediately, advancing state to TRIGGERED in a
+                        // single step. On OEMs that ignore this extra the intent still opens the
+                        // standard Accessibility Settings list with no harm.
+                        val serviceComp =
+                            "${context.packageName}/.service.SafeWordAccessibilityService"
+                        context.startActivity(
+                            Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                                putExtra(":settings:fragment_args_key", serviceComp)
+                                putExtra(
+                                    ":settings:show_fragment_args",
+                                    android.os.Bundle().apply {
+                                        putString(":settings:fragment_args_key", serviceComp)
+                                    },
+                                )
+                            },
+                        )
+                    },
+                    onOpenAppInfo = {
+                        context.startActivity(
+                            Intent(
+                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                "package:${context.packageName}".toUri(),
+                            ),
+                        )
+                    },
+                    onRecheck = {
+                        restrictedState = viewModel.restrictedState()
+                        if (a11yEnabled) advanceFrom(STEP_A11Y)
+                    },
+                    onContinue = { advanceFrom(STEP_A11Y) },
+                    showNeedHelpLink = showNeedHelpLink && !a11yEnabled,
+                    showStuckHint = showStuckHint && !a11yEnabled,
+                    showAdvancedStuckHint = showAdvancedStuckHint && !a11yEnabled,
+                )
+
+                STEP_COMPLETE -> CompletePage(
+                    onComplete = {
                         viewModel.markOnboardingComplete()
                         onComplete()
                     },
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(stringResource(R.string.onboarding_continue))
-                }
-            }
-        }
-    }
-}
-
-// ---------- Step progress dots ----------
-
-@Composable
-private fun StepProgressRow(currentStep: Int, totalSteps: Int) {
-    Row(
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        for (i in 1..totalSteps) {
-            GlassStepBadge(number = i, isDone = i < currentStep)
-            if (i < totalSteps) Spacer(Modifier.width(12.dp))
-        }
-    }
-}
-
-// ---------- Generic step card ----------
-
-@Composable
-private fun StepCard(
-    stepNumber: Int,
-    title: String,
-    subtitle: String,
-    isDone: Boolean,
-    buttonLabel: String,
-    onAction: () -> Unit,
-) {
-    GlassCard(
-        modifier = Modifier.fillMaxWidth(),
-        cornerRadius = 20.dp,
-        doneTint = isDone,
-        contentPadding = 0.dp,
-    ) {
-        GlassListItem(
-            headlineContent = {
-                Text(
-                    stringResource(R.string.onboarding_step_title, stepNumber, title),
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                )
-            },
-            supportingContent = {
-                Text(
-                    if (isDone) stringResource(R.string.onboarding_step_complete) else subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (isDone) DoneGreen else GlassDimText,
-                )
-            },
-            leadingContent = { GlassStepBadge(number = stepNumber, isDone = isDone) },
-            trailingContent = {
-                if (!isDone) {
-                    Button(
-                        onClick = onAction,
-                        shape = RoundedCornerShape(12.dp),
-                    ) {
-                        Text(buttonLabel, style = MaterialTheme.typography.labelMedium)
-                    }
-                }
-            },
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-        )
-    }
-}
-
-// ---------- Download step card ----------
-
-@Composable
-private fun DownloadStepCard(
-    stepNumber: Int,
-    downloadState: ModelDownloadState,
-    modelReady: Boolean,
-    onRetry: () -> Unit,
-) {
-    GlassCard(
-        modifier = Modifier.fillMaxWidth(),
-        cornerRadius = 20.dp,
-        doneTint = modelReady,
-        contentPadding = 0.dp,
-    ) {
-        Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
-            GlassListItem(
-                headlineContent = {
-                    Text(
-                        stringResource(R.string.onboarding_step_title, stepNumber, stringResource(R.string.onboarding_step_model_title)),
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                },
-                supportingContent = {
-                    val statusText = when (downloadState) {
-                        is ModelDownloadState.NotDownloaded ->
-                            stringResource(
-                                R.string.onboarding_step_model_preparing,
-                                OnboardingViewModel.DEFAULT_MODEL_SIZE_DESC,
-                            )
-                        is ModelDownloadState.Downloading ->
-                            stringResource(
-                                R.string.onboarding_step_model_downloading,
-                                (downloadState.progress * 100).toInt(),
-                            )
-                        is ModelDownloadState.Downloaded ->
-                            stringResource(R.string.onboarding_step_model_downloaded)
-                        is ModelDownloadState.Error ->
-                            stringResource(R.string.onboarding_step_model_error, downloadState.message)
-                    }
-                    Text(
-                        statusText,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = when (downloadState) {
-                            is ModelDownloadState.Downloaded -> DoneGreen
-                            is ModelDownloadState.Error -> MaterialTheme.colorScheme.error
-                            else -> GlassDimText
-                        },
-                    )
-                },
-                leadingContent = { GlassStepBadge(number = stepNumber, isDone = modelReady) },
-                trailingContent = {
-                    if (downloadState is ModelDownloadState.Error) {
-                        Button(onClick = onRetry, shape = RoundedCornerShape(12.dp)) {
-                            Text(stringResource(R.string.onboarding_step_model_retry))
-                        }
-                    }
-                },
-            )
-
-            if (downloadState is ModelDownloadState.Downloading) {
-                Spacer(Modifier.height(8.dp))
-                LinearProgressIndicator(
-                    progress = { downloadState.progress },
-                    modifier = Modifier.fillMaxWidth(),
                 )
             }
         }

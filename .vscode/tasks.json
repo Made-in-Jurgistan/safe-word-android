@@ -1,112 +1,41 @@
 {
-	"version": "2.0.0",
-	"tasks": [
-		{
-			"label": "gradle: clean assembleDebug",
-			"type": "shell",
-			"command": ".\\gradlew.bat",
-			"args": [
-				"clean",
-				"assembleDebug"
-			],
-			"isBackground": false,
-			"problemMatcher": [],
-			"group": "build"
-		},
-		{
-			"label": "gradle: clean assembleDebug",
-			"type": "shell",
-			"command": ".\\gradlew.bat",
-			"args": [
-				"clean",
-				"assembleDebug"
-			],
-			"isBackground": false,
-			"problemMatcher": [],
-			"group": "build"
-		},
-		{
-			"label": "gradle: clean assembleDebug",
-			"type": "shell",
-			"command": ".\\gradlew.bat",
-			"args": [
-				"clean",
-				"assembleDebug"
-			],
-			"isBackground": false,
-			"problemMatcher": [],
-			"group": "build"
-		},
-		{
-			"label": "gradle: clean assembleDebug",
-			"type": "shell",
-			"command": ".\\gradlew.bat",
-			"args": [
-				"clean",
-				"assembleDebug"
-			],
-			"isBackground": false,
-			"problemMatcher": [],
-			"group": "build"
-		},
-		{
-			"label": "gradle: clean assembleDebug",
-			"type": "shell",
-			"command": ".\\gradlew.bat",
-			"args": [
-				"clean",
-				"assembleDebug"
-			],
-			"isBackground": false,
-			"problemMatcher": [],
-			"group": "build"
-		},
-		{
-			"label": "gradle: clean assembleDebug",
-			"type": "shell",
-			"command": ".\\gradlew.bat",
-			"args": [
-				"clean",
-				"assembleDebug"
-			],
-			"isBackground": false,
-			"problemMatcher": [],
-			"group": "build"
-		},
-		{
-			"label": "gradle: clean assembleDebug",
-			"type": "shell",
-			"command": ".\\gradlew.bat",
-			"args": [
-				"clean",
-				"assembleDebug"
-			],
-			"isBackground": false,
-			"problemMatcher": [],
-			"group": "build"
-		},
-		{
-			"label": "gradle: assembleDebug",
-			"type": "shell",
-			"command": ".\\gradlew.bat",
-			"args": [
-				"assembleDebug"
-			],
-			"isBackground": false,
-			"problemMatcher": [],
-			"group": "build"
-		},
-		{
-			"label": "gradle: clean assembleDebug",
-			"type": "shell",
-			"command": ".\\gradlew.bat",
-			"args": [
-				"clean",
-				"assembleDebug"
-			],
-			"isBackground": false,
-			"problemMatcher": [],
-			"group": "build"
-		}
-	]
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "gradle: clean assembleDebug",
+      "type": "shell",
+      "command": ".\\gradlew.bat",
+      "args": ["clean", "assembleDebug"],
+      "isBackground": false,
+      "problemMatcher": [],
+      "group": "build"
+    },
+    {
+      "label": "gradle: assembleDebug",
+      "type": "shell",
+      "command": ".\\gradlew.bat",
+      "args": ["assembleDebug"],
+      "isBackground": false,
+      "problemMatcher": [],
+      "group": "build"
+    },
+    {
+      "label": "gradle: compileDebugKotlin",
+      "type": "shell",
+      "command": ".\\gradlew.bat",
+      "args": [":app:compileDebugKotlin"],
+      "isBackground": false,
+      "problemMatcher": [],
+      "group": "build"
+    },
+    {
+      "label": "gradle: testDebugUnitTest",
+      "type": "shell",
+      "command": ".\\gradlew.bat",
+      "args": [":app:testDebugUnitTest"],
+      "isBackground": false,
+      "problemMatcher": [],
+      "group": "test"
+    }
+  ]
 }

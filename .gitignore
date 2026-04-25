@@ -37,8 +37,19 @@ obj/
 # Serena config
 .serena/
 
-# Junk files at repo root
-list[str]
-User
-handy-android/I'
-handy-android/IIBBBBB'
+# Debug / profiling artifacts
+sw_perf*.txt
+streaming*.txt
+compile-errors.txt
+test-output.txt
+
+# JVM crash dumps (also covered by *.log, but explicit for clarity)
+hs_err_pid*
+replay_pid*
+
+# Training output (reproducible from Colab notebook)
+scripts/grammar_model_output/
+
+# Tool-generated caches
+.kotlin/
+.playwright-mcp/

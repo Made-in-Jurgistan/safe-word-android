@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": {
+          "toolName": "create_file|replace_string_in_file|multi_replace_string_in_file",
+          "toolInput": {
+            "filePath": ".*\\.kt$"
+          }
+        },
+        "type": "command",
+        "windows": ".\\gradlew.bat :app:compileDebugKotlin 2>&1 | Select-String -Pattern 'error:|warning:' | Select-Object -First 20",
+        "command": "./gradlew :app:compileDebugKotlin 2>&1 | grep -E 'error:|warning:' | head -20",
+        "timeout": 120
+      }
+    ]
+  }
+}

@@ -3,18 +3,24 @@
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.ClipData
+import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.PersistableBundle
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 import com.safeword.android.R
 import com.safeword.android.transcription.VoiceAction
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
+import com.safeword.android.transcription.clampCursor
+import dagger.hilt.EntryPoint
+import dagger.hilt.InstallIn
+import dagger.hilt.android.EntryPointAccessors
+import dagger.hilt.components.SingletonComponent
 import timber.log.Timber
 
 /**
@@ -29,94 +35,36 @@ import timber.log.Timber
  */
 class SafeWordAccessibilityService : AccessibilityService() {
 
-    data class InputContextSnapshot(
-        val packageName: String,
-        val hintText: String,
-        val className: String,
-        val textFieldFocused: Boolean,
-        val keyboardVisible: Boolean,
-    )
-
-    companion object {
-        @Volatile
-        var instance: SafeWordAccessibilityService? = null
-            private set
-
-        private val _textFieldFocused = MutableStateFlow(false)
-        /** True when an editable text field is focused in any app. */
-        val textFieldFocused: StateFlow<Boolean> = _textFieldFocused.asStateFlow()
-
-        private val _keyboardVisible = MutableStateFlow(false)
-        /** True when any IME (soft keyboard) window is visible on screen. */
-        val keyboardVisible: StateFlow<Boolean> = _keyboardVisible.asStateFlow()
-
-        private val _activePackageName = MutableStateFlow("")
-        /** Package name for the currently focused editor context (if available). */
-        val activePackageName: StateFlow<String> = _activePackageName.asStateFlow()
-
-        private val _focusedFieldHint = MutableStateFlow("")
-        /** Hint/placeholder text for the currently focused editable node (if available). */
-        val focusedFieldHint: StateFlow<String> = _focusedFieldHint.asStateFlow()
-
-        private val _focusedFieldClass = MutableStateFlow("")
-        /** Class name of the currently focused editable node (if available). */
-        val focusedFieldClass: StateFlow<String> = _focusedFieldClass.asStateFlow()
-
-        /** Snapshot of the current input context for STT prompt/correction decisions. */
-        fun inputContextSnapshot(): InputContextSnapshot = InputContextSnapshot(
-            packageName = _activePackageName.value,
-            hintText = _focusedFieldHint.value,
-            className = _focusedFieldClass.value,
-            textFieldFocused = _textFieldFocused.value,
-            keyboardVisible = _keyboardVisible.value,
-        )
-
-        /**
-         * Insert text into the currently focused text field in any app.
-         * Falls back to clipboard paste if direct insertion fails.
-         *
-         * @return true if text was successfully inserted
-         */
-        fun insertText(text: String): Boolean {
-            val service = instance ?: run {
-                Timber.w("[A11Y] insertText | service not active, cannot insert %d chars", text.length)
-                return false
-            }
-            Timber.d("[A11Y] insertText | attempting to insert %d chars", text.length)
-            return service.performTextInsertion(text)
-        }
-
-        /** Check if the accessibility service is currently active. */
-        fun isActive(): Boolean {
-            val active = instance != null
-            Timber.v("[A11Y] isActive | active=%b", active)
-            return active
-        }
-
-        /**
-         * Execute a voice action on the currently focused text field.
-         *
-         * @return true if the action was executed successfully, false if the service
-         *         is not active or the action could not be performed.
-         */
-        fun executeVoiceAction(action: VoiceAction): Boolean {
-            val service = instance ?: run {
-                Timber.w("[A11Y] executeVoiceAction | service not active, cannot execute %s", action)
-                return false
-            }
-            Timber.i("[VOICE] executeVoiceAction | action=%s", action)
-            return service.performVoiceAction(action)
-        }
+    @EntryPoint
+    @InstallIn(SingletonComponent::class)
+    interface HolderEntryPoint {
+        fun accessibilityStateHolder(): AccessibilityStateHolder
     }
+
+    /** Delay before auto-clearing clipboard fallback content (privacy safeguard). */
+    private companion object {
+        const val CLIPBOARD_CLEAR_DELAY_MS = 60_000L
+
+        /** Maximum characters allowed in a single text insertion — prevents DoS via oversized transcripts. */
+        const val MAX_INSERTION_LENGTH = 10_000
+    }
+
+    private lateinit var stateHolder: AccessibilityStateHolder
+
+    /** Cached result of the last [hasImeWindow] IPC call. Updated only on WINDOWS_CHANGED events. */
+    @Volatile private var cachedImeVisible: Boolean = false
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        instance = this
+        stateHolder = EntryPointAccessors.fromApplication(
+            application,
+            HolderEntryPoint::class.java,
+        ).accessibilityStateHolder()
+        stateHolder.serviceInstance = this
         Timber.i("[LIFECYCLE] SafeWordAccessibilityService.onServiceConnected")
 
         serviceInfo = AccessibilityServiceInfo().apply {
             eventTypes = AccessibilityEvent.TYPE_VIEW_FOCUSED or
-                AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED or
                 AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
                 AccessibilityEvent.TYPE_WINDOWS_CHANGED
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
@@ -132,25 +80,36 @@ class SafeWordAccessibilityService : AccessibilityService() {
             AccessibilityEvent.TYPE_VIEW_FOCUSED,
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
             AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {
-                val focused = hasFocusedEditableNode()
-                if (_textFieldFocused.value != focused) {
-                    _textFieldFocused.value = focused
-                    Timber.d("[A11Y] onAccessibilityEvent | textFieldFocused=%b event=%d", focused, event.eventType)
+                // Single IPC: cache root + focused node for both focus tracking and context update.
+                val root = rootInActiveWindow
+                val focusedNode = root?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+                val hasEditableFocus = focusedNode != null && focusedNode.isEditable
+                if (stateHolder.textFieldFocused.value != hasEditableFocus) {
+                    stateHolder.setTextFieldFocused(hasEditableFocus)
+                    Timber.d("[A11Y] onAccessibilityEvent | textFieldFocused=%b event=%d", hasEditableFocus, event.eventType)
                 }
-                val imeVisible = hasImeWindow()
-                if (_keyboardVisible.value != imeVisible) {
-                    _keyboardVisible.value = imeVisible
+                val imeVisible = if (event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED) {
+                    val result = hasImeWindow()
+                    cachedImeVisible = result
+                    result
+                } else {
+                    cachedImeVisible
+                }
+                if (stateHolder.keyboardVisible.value != imeVisible) {
+                    stateHolder.setKeyboardVisible(imeVisible)
                     Timber.d("[A11Y] onAccessibilityEvent | keyboardVisible=%b event=%d", imeVisible, event.eventType)
                 }
-                updateInputContext(event.packageName?.toString())
+                updateInputContext(event.packageName?.toString(), root, focusedNode)
             }
             else -> { /* ignore TYPE_VIEW_TEXT_CHANGED for focus tracking */ }
         }
     }
 
-    private fun updateInputContext(eventPackage: String?) {
-        val root = rootInActiveWindow
-        val focused = root?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+    private fun updateInputContext(
+        eventPackage: String?,
+        root: AccessibilityNodeInfo?,
+        focused: AccessibilityNodeInfo?,
+    ) {
         val packageName = eventPackage
             ?: focused?.packageName?.toString()
             ?: root?.packageName?.toString()
@@ -158,24 +117,15 @@ class SafeWordAccessibilityService : AccessibilityService() {
         val hint = focused?.hintText?.toString().orEmpty()
         val className = focused?.className?.toString().orEmpty()
 
-        if (_activePackageName.value != packageName) {
-            _activePackageName.value = packageName
+        if (stateHolder.activePackageName.value != packageName) {
+            stateHolder.setActivePackageName(packageName)
         }
-        if (_focusedFieldHint.value != hint) {
-            _focusedFieldHint.value = hint
+        if (stateHolder.focusedFieldHint.value != hint) {
+            stateHolder.setFocusedFieldHint(hint)
         }
-        if (_focusedFieldClass.value != className) {
-            _focusedFieldClass.value = className
+        if (stateHolder.focusedFieldClass.value != className) {
+            stateHolder.setFocusedFieldClass(className)
         }
-    }
-
-    /**
-     * Check whether the active window has a focused editable node.
-     */
-    private fun hasFocusedEditableNode(): Boolean {
-        val root = rootInActiveWindow ?: return false
-        val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-        return focused != null && focused.isEditable
     }
 
     /** Check whether an IME (soft keyboard) window is currently on screen. */
@@ -187,14 +137,31 @@ class SafeWordAccessibilityService : AccessibilityService() {
     }
 
     override fun onDestroy() {
+        // Remove all pending clipboard auto-clear callbacks to prevent leaking
+        // the service through the Handler's internal message queue.
+        clipboardHandler.removeCallbacksAndMessages(null)
         super.onDestroy()
-        instance = null
-        _textFieldFocused.value = false
-        _keyboardVisible.value = false
-        _activePackageName.value = ""
-        _focusedFieldHint.value = ""
-        _focusedFieldClass.value = ""
+        if (::stateHolder.isInitialized) {
+            stateHolder.serviceInstance = null
+            stateHolder.setTextFieldFocused(false)
+            stateHolder.setKeyboardVisible(false)
+            stateHolder.setActivePackageName("")
+            stateHolder.setFocusedFieldHint("")
+            stateHolder.setFocusedFieldClass("")
+        }
         Timber.i("[LIFECYCLE] SafeWordAccessibilityService.onDestroy")
+    }
+
+    /**
+     * Return the current text content of the focused input field, or null if
+     * - no active window / focused field
+     * - the field is a password field (never read for privacy)
+     */
+    internal fun getCurrentFocusedFieldText(): String? {
+        val rootNode = rootInActiveWindow ?: return null
+        val focusedNode = rootNode.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return null
+        if (focusedNode.isPassword) return null
+        return focusedNode.text?.toString()
     }
 
     /**
@@ -204,7 +171,13 @@ class SafeWordAccessibilityService : AccessibilityService() {
      *   2. Find any editable node → ACTION_SET_TEXT
      *   3. Fallback: copy to clipboard + ACTION_PASTE on focused node
      */
-    private fun performTextInsertion(text: String): Boolean {
+    internal fun performTextInsertion(text: String): Boolean {
+        if (text.length > MAX_INSERTION_LENGTH) {
+            Timber.w("[A11Y] performTextInsertion | text too long: %d chars (max=%d) — truncating", text.length, MAX_INSERTION_LENGTH)
+            // Fall back to clipboard with truncated text rather than silently truncating insertion,
+            // so the user at least has access to the full content.
+            return copyToClipboardOnly(text.take(MAX_INSERTION_LENGTH))
+        }
         val rootNode = rootInActiveWindow ?: run {
             Timber.w("[A11Y] performTextInsertion | no active window root node — clipboard fallback")
             return copyToClipboardOnly(text)
@@ -230,12 +203,40 @@ class SafeWordAccessibilityService : AccessibilityService() {
             return pasteViaClipboard(editableNode, text)
         }
 
+        // Strategy 2b: Try tapping FAB to open chat input (WhatsApp, Telegram, etc.)
+        // This handles apps where the input field is not accessible until FAB is tapped.
+        if (voiceActionExecutor.tryTapFloatingActionButton()) {
+            // After tapping FAB, retry finding the editable node
+            val newRoot = rootInActiveWindow
+            if (newRoot != null) {
+                val postFabNode = findFirstEditableNode(newRoot)
+                if (postFabNode != null) {
+                    Timber.d("[A11Y] performTextInsertion | strategy=FAB_THEN_EDITABLE class=%s", postFabNode.className)
+                    val success = insertIntoNode(postFabNode, text)
+                    if (success) return true
+                    return pasteViaClipboard(postFabNode, text)
+                }
+            }
+        }
+
         // Strategy 3: clipboard-only fallback
         Timber.w("[A11Y] performTextInsertion | strategy=CLIPBOARD_ONLY — no editable field found")
         return copyToClipboardOnly(text)
     }
 
-    private fun insertIntoNode(node: AccessibilityNodeInfo, text: String): Boolean {
+    private fun insertIntoNode(node: AccessibilityNodeInfo, text: String): Boolean = try {
+        insertIntoNodeUnsafe(node, text)
+    } catch (e: IllegalStateException) {
+        Timber.w(e, "[WARN] insertIntoNode | node detached during action")
+        false
+    }
+
+    private fun insertIntoNodeUnsafe(node: AccessibilityNodeInfo, text: String): Boolean {
+        // Privacy: never read existing text from password fields — only insert.
+        if (node.isPassword) {
+            Timber.d("[A11Y] insertIntoNode | password field detected — using ACTION_PASTE instead of reading text")
+            return pasteViaClipboard(node, text)
+        }
         val rawExistingText = node.text?.toString() ?: ""
         val hint = node.hintText?.toString().orEmpty()
         val normalizedExisting = rawExistingText.trim()
@@ -247,8 +248,8 @@ class SafeWordAccessibilityService : AccessibilityService() {
 
         // Respect cursor position so text is inserted at caret for real content;
         // for hint placeholders, force replacement from the beginning.
-        val selStart = if (treatingAsHint) 0 else (node.textSelectionStart.takeIf { it >= 0 } ?: existingText.length)
-        val selEnd = if (treatingAsHint) existingText.length else (node.textSelectionEnd.takeIf { it >= 0 } ?: selStart)
+        val selStart = if (treatingAsHint) 0 else (node.textSelectionStart.takeIf { it >= 0 } ?: existingText.length).clampCursor(existingText)
+        val selEnd = if (treatingAsHint) existingText.length else (node.textSelectionEnd.takeIf { it >= 0 } ?: selStart).coerceIn(selStart, existingText.length)
         val newText = existingText.substring(0, selStart) + text + existingText.substring(selEnd)
         val newCursorPos = selStart + text.length
 
@@ -278,11 +279,21 @@ class SafeWordAccessibilityService : AccessibilityService() {
      */
     private fun pasteViaClipboard(node: AccessibilityNodeInfo, text: String): Boolean {
         val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText(getString(R.string.clipboard_label), text))
+        val clip = ClipData.newPlainText(getString(R.string.clipboard_label), text)
+        clip.description.extras = PersistableBundle().apply {
+            putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
+        }
+        clipboard.setPrimaryClip(clip)
 
         val result = node.performAction(AccessibilityNodeInfo.ACTION_PASTE)
         if (result) {
             Timber.i("[A11Y] pasteViaClipboard | ACTION_PASTE success chars=%d", text.length)
+            // On Android 13+ (API 33+), clipboard content is visible in system UI.
+            // Clear immediately for privacy rather than waiting for auto-clear.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                clipboard.clearPrimaryClip()
+                Timber.d("[CLIPBOARD] Cleared immediately on Android 13+ (API %d)", Build.VERSION.SDK_INT)
+            }
         } else {
             Timber.w("[A11Y] pasteViaClipboard | ACTION_PASTE failed — text in clipboard for manual paste")
         }
@@ -290,13 +301,88 @@ class SafeWordAccessibilityService : AccessibilityService() {
     }
 
     /**
+     * Replace everything in the focused field from [sessionStartOffset] onward with [newText].
+     * Preserves pre-session text (indices 0..<sessionStartOffset).
+     */
+    internal fun performSessionReplacement(sessionStartOffset: Int, newText: String): Boolean {
+        val rootNode = rootInActiveWindow ?: return copyToClipboardOnly(newText)
+        val node = rootNode.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+            ?.takeIf { it.isEditable }
+            ?: findFirstEditableNode(rootNode)
+            ?: return copyToClipboardOnly(newText)
+        return replaceSessionInNode(node, sessionStartOffset, newText)
+    }
+
+    private fun replaceSessionInNode(
+        node: AccessibilityNodeInfo,
+        sessionStartOffset: Int,
+        newText: String,
+    ): Boolean = try {
+        replaceSessionInNodeUnsafe(node, sessionStartOffset, newText)
+    } catch (e: IllegalStateException) {
+        Timber.w(e, "[WARN] replaceSessionInNode | node detached during action")
+        false
+    }
+
+    private fun replaceSessionInNodeUnsafe(
+        node: AccessibilityNodeInfo,
+        sessionStartOffset: Int,
+        newText: String,
+    ): Boolean {
+        if (node.isPassword) return pasteViaClipboard(node, newText)
+        val rawExistingText = node.text?.toString() ?: ""
+        val hint = node.hintText?.toString().orEmpty()
+        val treatingAsHint = node.isShowingHintText ||
+            (hint.isNotEmpty() && rawExistingText.trim().equals(hint.trim(), ignoreCase = true))
+        val existingText = if (treatingAsHint) "" else rawExistingText
+        val safeOffset = sessionStartOffset.coerceIn(0, existingText.length)
+        val newFullText = existingText.substring(0, safeOffset) + newText
+        val cursorPos = newFullText.length
+        val args = Bundle().apply {
+            putCharSequence(
+                AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                newFullText,
+            )
+        }
+        val result = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        if (result) {
+            val moveArgs = Bundle().apply {
+                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, cursorPos)
+                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, cursorPos)
+            }
+            node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, moveArgs)
+            Timber.i("[A11Y] replaceSessionInNode | success totalChars=%d cursorAt=%d", newFullText.length, cursorPos)
+        } else {
+            Timber.w("[A11Y] replaceSessionInNode | ACTION_SET_TEXT failed totalChars=%d", newFullText.length)
+        }
+        return result
+    }
+
+    // Handler for delayed clipboard cleanup
+    private val clipboardHandler = Handler(Looper.getMainLooper())
+
+    /**
      * Last resort: just put text on clipboard so the user can paste manually.
+     * Auto-clears after 60s to avoid leaking sensitive transcription text.
      */
     private fun copyToClipboardOnly(text: String): Boolean {
         return try {
             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            clipboard.setPrimaryClip(ClipData.newPlainText(getString(R.string.clipboard_label), text))
+            val clip = ClipData.newPlainText(getString(R.string.clipboard_label), text)
+            clip.description.extras = PersistableBundle().apply {
+                putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
+            }
+            clipboard.setPrimaryClip(clip)
             Timber.i("[CLIPBOARD] copyToClipboardOnly | success chars=%d", text.length)
+            // Schedule auto-clear to mitigate privacy risk of leaving transcription on clipboard
+            clipboardHandler.postDelayed({
+                try {
+                    if (clipboard.primaryClip?.getItemAt(0)?.text == text) {
+                        clipboard.clearPrimaryClip()
+                        Timber.d("[CLIPBOARD] Auto-cleared after timeout")
+                    }
+                } catch (_: Exception) { /* ignore */ }
+            }, CLIPBOARD_CLEAR_DELAY_MS)
             true
         } catch (e: Exception) {
             Timber.e(e, "[CLIPBOARD] copyToClipboardOnly | failed")
@@ -304,240 +390,15 @@ class SafeWordAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun findFirstEditableNode(node: AccessibilityNodeInfo, depth: Int = 0): AccessibilityNodeInfo? {
-        if (depth > 20) return null
-        if (node.isEditable) return node
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            val found = findFirstEditableNode(child, depth + 1)
-            if (found != null) return found
-        }
-        return null
-    }
+    private fun findFirstEditableNode(node: AccessibilityNodeInfo): AccessibilityNodeInfo? =
+        VoiceActionExecutor.findFirstEditableNode(node)
 
     // ── Voice action execution ──────────────────────────────────────────────
 
-    private fun performVoiceAction(action: VoiceAction): Boolean {
-        return when (action) {
-            is VoiceAction.InsertText -> performTextInsertion(action.text)
-            is VoiceAction.NewLine -> performTextInsertion("\n")
-            is VoiceAction.NewParagraph -> performTextInsertion("\n\n")
-
-            is VoiceAction.Backspace -> performBackspace()
-            is VoiceAction.DeleteSelection -> performDeleteSelection()
-            is VoiceAction.DeleteLastWord -> performDeleteLastWord()
-            is VoiceAction.DeleteLastSentence -> performDeleteLastSentence()
-            is VoiceAction.ClearAll -> performClearAll()
-
-            is VoiceAction.Undo -> performUndoRedo(undo = true)
-            is VoiceAction.Redo -> performUndoRedo(undo = false)
-
-            is VoiceAction.SelectAll -> performSelectAll()
-            is VoiceAction.SelectLastWord -> performSelectLastWord()
-
-            is VoiceAction.Copy -> performClipboardAction(AccessibilityNodeInfo.ACTION_COPY)
-            is VoiceAction.Cut -> performClipboardAction(AccessibilityNodeInfo.ACTION_CUT)
-            is VoiceAction.Paste -> performClipboardAction(AccessibilityNodeInfo.ACTION_PASTE)
-
-            is VoiceAction.CapitalizeSelection -> performTransformSelection { text ->
-                text.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
-            }
-            is VoiceAction.UppercaseSelection -> performTransformSelection { it.uppercase() }
-            is VoiceAction.LowercaseSelection -> performTransformSelection { it.lowercase() }
-
-            is VoiceAction.ReplaceText -> performReplaceText(action.oldText, action.newText)
-            is VoiceAction.SearchText -> performSearch(action.query)
-            is VoiceAction.GoBack -> performGlobalAction(GLOBAL_ACTION_BACK)
-            is VoiceAction.Send -> performSend()
-
-            // StopListening is handled by TranscriptionCoordinator directly — never reaches here
-            is VoiceAction.StopListening -> true
-        }
+    private val voiceActionExecutor by lazy {
+        VoiceActionExecutor({ rootInActiveWindow }, ::performTextInsertion)
     }
 
-    private fun getFocusedEditableNode(): AccessibilityNodeInfo? {
-        val root = rootInActiveWindow ?: return null
-        val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-        if (focused != null && focused.isEditable) return focused
-        return findFirstEditableNode(root)
-    }
-
-    private fun performBackspace(): Boolean {
-        val node = getFocusedEditableNode() ?: return false
-        val text = node.text?.toString() ?: return false
-        val selStart = node.textSelectionStart.takeIf { it >= 0 } ?: text.length
-        val selEnd = node.textSelectionEnd.takeIf { it >= 0 } ?: selStart
-        val newText: String
-        val newCursor: Int
-        if (selStart != selEnd) {
-            // Delete selection
-            newText = text.substring(0, selStart) + text.substring(selEnd)
-            newCursor = selStart
-        } else if (selStart > 0) {
-            // Delete one character before cursor
-            newText = text.substring(0, selStart - 1) + text.substring(selStart)
-            newCursor = selStart - 1
-        } else {
-            return false
-        }
-        return setTextAndCursor(node, newText, newCursor)
-    }
-
-    private fun performDeleteSelection(): Boolean {
-        val node = getFocusedEditableNode() ?: return false
-        val text = node.text?.toString() ?: return false
-        val selStart = node.textSelectionStart.takeIf { it >= 0 } ?: return false
-        val selEnd = node.textSelectionEnd.takeIf { it >= 0 } ?: return false
-        if (selStart == selEnd) return false // nothing selected
-        val newText = text.substring(0, selStart) + text.substring(selEnd)
-        return setTextAndCursor(node, newText, selStart)
-    }
-
-    private fun performDeleteLastWord(): Boolean {
-        val node = getFocusedEditableNode() ?: return false
-        val text = node.text?.toString() ?: return false
-        val cursor = node.textSelectionStart.takeIf { it >= 0 } ?: text.length
-        if (cursor == 0) return false
-        // Scan backwards: skip trailing whitespace, then delete word chars
-        var i = cursor
-        while (i > 0 && text[i - 1].isWhitespace()) i--
-        while (i > 0 && !text[i - 1].isWhitespace()) i--
-        val newText = text.substring(0, i) + text.substring(cursor)
-        return setTextAndCursor(node, newText, i)
-    }
-
-    private fun performDeleteLastSentence(): Boolean {
-        val node = getFocusedEditableNode() ?: return false
-        val text = node.text?.toString() ?: return false
-        val cursor = node.textSelectionStart.takeIf { it >= 0 } ?: text.length
-        if (cursor == 0) return false
-        // Scan backwards past current sentence to the previous sentence-ending punctuation
-        var i = cursor
-        while (i > 0 && text[i - 1].isWhitespace()) i--
-        while (i > 0 && text[i - 1] !in ".!?\n") i--
-        val newText = text.substring(0, i) + text.substring(cursor)
-        return setTextAndCursor(node, newText, i)
-    }
-
-    private fun performClearAll(): Boolean {
-        val node = getFocusedEditableNode() ?: return false
-        return setTextAndCursor(node, "", 0)
-    }
-
-    private fun performUndoRedo(undo: Boolean): Boolean {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            Timber.w("[A11Y] performUndoRedo | undo=%b unsupported on API %d (requires 34+)", undo, Build.VERSION.SDK_INT)
-            return false
-        }
-        val node = getFocusedEditableNode() ?: return false
-        // AccessibilityAction IDs for undo (0x02000000) and redo (0x02000001) added in API 34.
-        val actionId = if (undo) 0x02000000 else 0x02000001
-        val result = node.performAction(actionId)
-        Timber.d("[A11Y] performUndoRedo | undo=%b result=%b", undo, result)
-        return result
-    }
-
-    private fun performSelectAll(): Boolean {
-        val node = getFocusedEditableNode() ?: return false
-        val text = node.text?.toString() ?: return false
-        val args = Bundle().apply {
-            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, 0)
-            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, text.length)
-        }
-        return node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, args)
-    }
-
-    private fun performSelectLastWord(): Boolean {
-        val node = getFocusedEditableNode() ?: return false
-        val text = node.text?.toString() ?: return false
-        val cursor = node.textSelectionStart.takeIf { it >= 0 } ?: text.length
-        var wordEnd = cursor
-        while (wordEnd > 0 && text[wordEnd - 1].isWhitespace()) wordEnd--
-        var wordStart = wordEnd
-        while (wordStart > 0 && !text[wordStart - 1].isWhitespace()) wordStart--
-        if (wordStart == wordEnd) return false
-        val args = Bundle().apply {
-            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, wordStart)
-            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, wordEnd)
-        }
-        return node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, args)
-    }
-
-    private fun performClipboardAction(action: Int): Boolean {
-        val node = getFocusedEditableNode() ?: return false
-        return node.performAction(action)
-    }
-
-    private fun performTransformSelection(transform: (String) -> String): Boolean {
-        val node = getFocusedEditableNode() ?: return false
-        val text = node.text?.toString() ?: return false
-        val selStart = node.textSelectionStart.takeIf { it >= 0 } ?: return false
-        val selEnd = node.textSelectionEnd.takeIf { it >= 0 } ?: return false
-        if (selStart == selEnd) return false
-        val selected = text.substring(selStart, selEnd)
-        val transformed = transform(selected)
-        val newText = text.substring(0, selStart) + transformed + text.substring(selEnd)
-        return setTextAndCursor(node, newText, selStart + transformed.length)
-    }
-
-    private fun performSend(): Boolean {
-        val root = rootInActiveWindow
-        if (root != null) {
-            val sendButton = findSendButton(root)
-            if (sendButton != null) {
-                val clicked = sendButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                if (clicked) return true
-            }
-        }
-        return performTextInsertion("\n")
-    }
-
-    private fun setTextAndCursor(node: AccessibilityNodeInfo, text: String, cursor: Int): Boolean {
-        val args = Bundle().apply {
-            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
-        }
-        val result = node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-        if (result) {
-            val moveArgs = Bundle().apply {
-                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, cursor)
-                putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, cursor)
-            }
-            node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, moveArgs)
-        }
-        return result
-    }
-
-    private fun performReplaceText(oldText: String, newText: String): Boolean {
-        val node = getFocusedEditableNode() ?: return false
-        val current = node.text?.toString() ?: return false
-        val idx = current.lowercase().indexOf(oldText.lowercase())
-        if (idx < 0) return false
-        val replaced = current.substring(0, idx) + newText + current.substring(idx + oldText.length)
-        return setTextAndCursor(node, replaced, idx + newText.length)
-    }
-
-    private fun performSearch(query: String): Boolean {
-        return performTextInsertion(query) && performSend()
-    }
-
-    private fun findSendButton(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        val keywords = setOf("send", "submit", "search", "go", "senden", "suchen", "abschicken")
-        return findNodeByContentDesc(root, keywords)
-    }
-
-    private fun findNodeByContentDesc(
-        node: AccessibilityNodeInfo,
-        keywords: Set<String>,
-        depth: Int = 0,
-    ): AccessibilityNodeInfo? {
-        if (depth > 15) return null
-        val desc = node.contentDescription?.toString()?.lowercase()
-        if (desc != null && node.isClickable && keywords.any { desc.contains(it) }) return node
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            val found = findNodeByContentDesc(child, keywords, depth + 1)
-            if (found != null) return found
-        }
-        return null
-    }
+    internal fun performVoiceAction(action: VoiceAction): Boolean =
+        voiceActionExecutor.execute(action)
 }

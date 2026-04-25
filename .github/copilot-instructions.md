@@ -1,393 +1,252 @@
-# Safe Word Android — Copilot Instructions
+# Safe Word — AI Coding Assistant Instructions
 
-## Project overview
+## Project Overview
 
-Safe Word is an on-device voice-to-text Android app. All speech inference (whisper.cpp)
-and voice activity detection (Silero VAD via ONNX Runtime and optional native GGML Silero VAD in whisper.cpp) run locally — no audio or text
-leaves the device. The app provides a floating overlay mic button that works over any app
-and inserts transcribed text via an Accessibility Service.
+Safe Word is an **Android voice dictation app** that transcribes speech into text using an on-device STT engine (Moonshine Voice) and inserts text into any app via `AccessibilityService`. It is **not** an IME/keyboard — text insertion uses Android's accessibility framework, not `InputMethodService`.
 
-Safe Word is **not** a keyboard IME — it is a voice-only extension to the user's existing keyboard.
-
-**Gradle project name**: `SafeWordAndroid`
-**Package**: `com.safeword.android`
-**Min SDK**: 33 (Android 13) | **Target SDK**: 35 | **Compile SDK**: 35
-**NDK**: 28.2.13676358 | **ABI**: arm64-v8a only
-**Kotlin**: 2.1.10 | **Java target**: 17 | **KSP** (not kapt)
+- **Single module**: `:app` — namespace `com.safeword.android`
+- **Kotlin 2.1.10**, minSdk 33, targetSdk/compileSdk 36, ABI: arm64-v8a only
+- **Language**: Kotlin exclusively; no Java source files
+- **Native C++ layer**: `app/src/main/cpp/moonshine-bridge.cpp` wraps the open-source `moonshine-core` C++ library via JNI. CMake builds `libmoonshine-bridge.so`. Kotlin side: `MoonshineNativeBridge.kt` (JNI declarations) → `MoonshineNativeEngine.kt` (streaming engine). ONNX Runtime for Silero VAD comes from a pre-built AAR.
 
 ---
 
-## Repository layout
+## Build & Test
 
+```bash
+# Debug build
+.\gradlew.bat assembleDebug
+
+# Clean + debug build
+.\gradlew.bat clean assembleDebug
+
+# Compile Kotlin only (fast check)
+.\gradlew.bat :app:compileDebugKotlin
+
+# All unit tests
+.\gradlew.bat :app:testDebugUnitTest
+
+# Focused unit tests (faster)
+.\gradlew.bat :app:testDebugUnitTest --tests "com.safeword.android.transcription.*"
+
+# Compile Android test sources
+.\gradlew.bat :app:compileDebugAndroidTestKotlin
 ```
-app/
-├── src/main/java/com/safeword/android/
-│   ├── audio/                  # Audio capture and VAD
-│   │   ├── AudioRecorder.kt         # 16 kHz mono PCM via AudioRecord
-│   │   ├── FloatRingBuffer.kt       # Lock-free ring buffer for audio samples
-│   │   └── SileroVadDetector.kt     # Silero VAD via ONNX Runtime
-│   ├── transcription/          # Speech-to-text pipeline
-│   │   ├── WhisperLib.kt            # JNI declarations (native methods)
-│   │   ├── WhisperEngine.kt         # Model lifecycle (init/free/preload)
-│   │   ├── TranscriptionCoordinator.kt  # Orchestrates record→VAD→infer→post-process
-│   │   ├── TranscriptionState.kt    # Sealed interface state machine
-│   │   ├── TranscriptionResult.kt   # Data class for inference output
-│   │   ├── InferenceConfig.kt       # Adaptive thread tuning heuristic
-│   │   ├── VoiceCommandDetector.kt  # Phase 1: voice command matching
-│   │   ├── ContentNormalizer.kt     # Phase 2: emoji, punctuation, normalization
-│   │   ├── TextFormatter.kt         # Phase 3: capitalization, whitespace cleanup
-│   │   ├── TextPostProcessor.kt     # Chains phases 1→2→3
-│   │   └── ConfusionSetCorrector.kt # Homophone Levenshtein correction
-│   ├── service/                # Android services
-│   │   ├── FloatingOverlayService.kt      # SYSTEM_ALERT_WINDOW overlay host
-│   │   ├── OverlayMicButton.kt            # Draggable floating mic button
-│   │   ├── RecordingService.kt            # Foreground service for mic capture
-│   │   ├── SafeWordAccessibilityService.kt # Text insertion + voice commands
-│   │   └── ThermalMonitor.kt              # PowerManager thermal throttle
-│   ├── data/
-│   │   ├── db/                 # Room database (transcription history)
-│   │   ├── model/              # Model download (WorkManager + OkHttp)
-│   │   └── settings/           # DataStore preferences
-│   │       ├── SettingsRepository.kt  # Flow-based settings access
-│   │       └── AppSettings.kt        # Data class with defaults
-│   ├── ui/                     # Jetpack Compose UI
-│   │   ├── screens/            # onboarding/, settings/, models/, splash/
-│   │   ├── components/         # GlassCard, GlassSurface, etc.
-│   │   ├── navigation/         # SafeWordNavGraph
-│   │   └── theme/              # Material 3 theme, colors
-│   ├── di/                     # Hilt modules
-│   │   ├── AppModule.kt             # Room, DAO singletons
-│   │   └── CoroutineScopesModule.kt # @ApplicationScope
-│   ├── SafeWordApp.kt         # @HiltAndroidApp, Timber, WorkManager
-│   └── MainActivity.kt        # Single-activity Compose host
-├── src/main/cpp/
-│   ├── whisper-jni.cpp         # Custom JNI bridge (nativeInit, Transcribe, Free)
-│   ├── CMakeLists.txt          # Top-level native build config
-│   └── whisper.cpp/            # Upstream whisper.cpp submodule (GGML, Vulkan)
-├── src/test/kotlin/            # JVM unit tests (JUnit 4 + Mockk + Turbine)
-└── src/androidTest/            # Instrumentation tests
-docs/                           # HTML reference documentation (read-only)
-scripts/                        # Build/eval scripts (currently empty)
-prd.md                          # Product Requirements Document
-```
+
+- `lint { abortOnError = true; warningsAsErrors = true }` — all lint warnings are build failures
+- A pre-compile hook (`.github/hooks/pre-compile.json`) auto-runs `compileDebugKotlin` after every `.kt` file edit and surfaces errors/warnings
+- Gradle 9.3.1 with configuration cache enabled (`org.gradle.configuration-cache=true`)
+- KSP for annotation processing (Room, Hilt) — **not** kapt
 
 ---
 
 ## Architecture
 
-### Transcription pipeline
+### Package Structure
+
+| Package          | Responsibility                                                                                                         |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `audio/`         | `AudioRecorder` (16 kHz PCM capture, streaming-only), `SileroVadDetector` (Silero v6 ONNX, 30 ms windows)              |
+| `transcription/` | STT orchestration, Moonshine engine, post-processing pipeline, personal vocabulary, phonetic matching                  |
+| `service/`       | Android services: `FloatingOverlayService`, `SafeWordAccessibilityService`, `ThermalMonitor`                           |
+| `data/db/`       | Room database (v4) — `personal_vocabulary`, `mic_access_events` tables                                                 |
+| `data/settings/` | DataStore preferences (`SettingsRepository`, `AppSettings`, `OnboardingRepository`)                                    |
+| `data/model/`    | STT model lifecycle: `ModelRepository` (download/cache), `ModelInfo`, `ModelDownloadWorker` (WorkManager)              |
+| `di/`            | Hilt modules: `AppModule` (Room, DAOs), `CoroutineScopesModule` (`@ApplicationScope`)                                  |
+| `ui/`            | Jetpack Compose — Onboarding, Settings, Splash screens; `SafeWordNavGraph`; `OverlayMicButton`, `StreamingTextPreview` |
+
+### Source Files — Complete Inventory
+
+**`audio/`** (5 files):
+`AdaptiveVadSensitivity.kt`, `AudioPreprocessor.kt`, `AudioRecorder.kt`, `SilenceAutoStopDetector.kt`, `SileroVadDetector.kt`
+
+**`transcription/`** (33 files):
+`AhoCorasickMatcher.kt`, `CompositionalCommandMatcher.kt`, `ConfusionSetCorrector.kt`, `ContentNormalizer.kt`, `ContextualGrammarCorrector.kt`, `CorrectionLearner.kt`, `DisfluencyNormalizer.kt`, `DormancyWorker.kt`, `HallucinationFilter.kt`, `IncrementalTextInserter.kt`, `InverseTextNormalizer.kt`, `ModelManager.kt`, `MoonshineNativeBridge.kt`, `MoonshineNativeEngine.kt`, `OptimalParameters.kt`, `PerformanceMonitor.kt`, `PhoneticIndex.kt`, `SemanticCommandMatcher.kt`, `SentenceEmbeddingModel.kt`, `SpokenSymbolConverter.kt`, `SpokenSymbolTables.kt`, `StreamingTranscriptionEngine.kt`, `StringDistance.kt`, `SymSpellCorrector.kt`, `TextFormatter.kt`, `TranscriptionCoordinator.kt`, `TranscriptionState.kt`, `VocabularyObserver.kt`, `VocabularyPatternCache.kt`, `VoiceAction.kt`, `VoiceCommandDetector.kt`, `VoiceCommandRegistry.kt`, `WordPieceTokenizer.kt`
+
+**`service/`** (4 files):
+`AccessibilityStateHolder.kt`, `FloatingOverlayService.kt`, `SafeWordAccessibilityService.kt`, `ThermalMonitor.kt`
+
+**`data/`** (2 files at package root):
+`MicAccessEventRepository.kt`, `PersonalVocabularyRepository.kt`
+
+**`data/db/`** (5 files):
+`MicAccessEventDao.kt`, `MicAccessEventEntity.kt`, `PersonalVocabularyDao.kt`, `PersonalVocabularyEntity.kt`, `SafeWordDatabase.kt`
+
+**`data/model/`** (3 files): `ModelDownloadWorker.kt`, `ModelInfo.kt`, `ModelRepository.kt`
+
+**`data/settings/`** (3 files): `AppSettings.kt`, `OnboardingRepository.kt`, `SettingsRepository.kt`
+
+**`di/`** (2 files): `AppModule.kt`, `CoroutineScopesModule.kt`
+
+**`util/`** (2 files): `AppDataStore.kt`, `InstallSourceDetector.kt`
+
+**`ui/`**: `MainActivity.kt`, `SafeWordApp.kt`, plus `components/` (`GlassComponents.kt`, `OverlayMicButton.kt`, `StreamingTextPreview.kt`), `navigation/` (`NavigationRoutes.kt`, `SafeWordNavGraph.kt`), `screens/` (onboarding: `AccessibilityPage.kt`, `CompletePage.kt`, `DeviceStepsProvider.kt`, `ModelDownloadPage.kt`, `OnboardingScreen.kt`, `OnboardingStepConstants.kt`, `OnboardingStepPage.kt`, `OnboardingViewModel.kt`, `WelcomePage.kt`; settings: `SettingsScreen.kt`, `SettingsViewModel.kt`; splash: `SplashScreen.kt`), `theme/` (`Theme.kt`)
+
+### Voice Pipeline
 
 ```
-AudioRecorder (16 kHz PCM)
-  → SileroVadDetector (speech probability per 30 ms frame)
-  → TranscriptionCoordinator (orchestrates everything)
-    ├── No-speech density short-circuit (<5% speech → skip inference)
-    ├── WhisperEngine.transcribe (JNI → whisper.cpp)
-    │   ├── Vulkan GPU (default) with CPU fallback
-    │   ├── Prewarm pass on load (1s silent inference)
-    │   ├── Backend switch hysteresis (3 consecutive slow RTFs)
-    │   └── ThermalMonitor gate (disable GPU at THERMAL_STATUS_MODERATE)
-    ├── ConfusionSetCorrector.apply (homophone fix)
-    └── TextPostProcessor.process
-        ├── Phase 1: VoiceCommandDetector (→ CommandDetected state)
-        ├── Phase 2: ContentNormalizer (emoji, punctuation, disfluency)
-        └── Phase 3: TextFormatter (capitalization, whitespace, trimming)
+AudioRecorder (16 kHz PCM, 480-sample chunks = 30 ms)
+  ├─► SileroVadDetector (per-chunk speech probability, ONNX Runtime)
+  └─► onProcessedChunk callback
+        └─► MoonshineNativeEngine.feedAudio() [via buffered Channel]
+              ├─► TranscriptEvent.LineTextChanged → partial text to UI
+              └─► TranscriptEvent.LineCompleted → TranscriptionCoordinator
+                    ├─► ContentNormalizer.preProcess (steps 1–5: clean, dehallucinate, defill, derepair)
+                    ├─► ConfusionSetCorrector (personal vocabulary, phonetic matching, SymSpell)
+                    ├─► ContentNormalizer.normalizePostPreProcess (steps 6–10: emoji, punctuation, ITN)
+                    ├─► TextFormatter (sentence-case, pronoun-I, trailing punctuation, spacing)
+                    └─► AccessibilityStateHolder → SafeWordAccessibilityService → target app
 ```
 
-### State machine
+### Android Services
 
-`TranscriptionState` is a sealed interface observed via `StateFlow`:
+| Service                        | Type                    | Purpose                                                                                   |
+| ------------------------------ | ----------------------- | ----------------------------------------------------------------------------------------- |
+| `FloatingOverlayService`       | Foreground (microphone) | Draggable ComposeView mic button over all apps; keeps mic capture alive when backgrounded |
+| `SafeWordAccessibilityService` | Accessibility           | Text insertion via `ACTION_SET_TEXT` / clipboard fallback                                 |
 
-```
-Idle → Recording → Transcribing → Done
-                                 → CommandDetected
-Any state → Error(message, previousState)
-```
+### Android Permissions
 
-### Dependency injection
+`RECORD_AUDIO`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MICROPHONE`, `POST_NOTIFICATIONS`, `INTERNET`, `ACCESS_NETWORK_STATE`, `SYSTEM_ALERT_WINDOW`
 
-Hilt with KSP. Two modules:
+### Key Design Decisions
 
-- `AppModule` — Room database, DAO (singleton)
-- `CoroutineScopesModule` — `@ApplicationScope` CoroutineScope (SupervisorJob + Default)
+- **Streaming-only architecture**: Audio flows from `AudioRecorder` → `onProcessedChunk` callback → `MoonshineNativeEngine.feedAudio()` in real time. There is no batch/accumulation mode.
+- **Single-threaded JNI dispatcher**: All Moonshine JNI calls run on a dedicated `newSingleThreadExecutor("MoonshineFeed")` dispatcher + `SupervisorJob()` to prevent concurrent native access.
+- **Moonshine Native API**: `MoonshineNativeBridge` JNI object → `nativeLoadTranscriber(path, modelArch)` → `nativeCreateStream` → `nativeStartStream` → `nativeAddAudio`/`nativeTranscribeStream` loop → `nativeStopStream` → `nativeFreeStream`. Returns JSON line snapshots parsed by `MoonshineNativeEngine`. `nativeFreeTranscriber()` releases all resources.
+- **Buffered audio channel**: A `Channel<FloatArray>(64)` (~1.9 s buffer) decouples AudioRecord from inference, absorbing jitter without back-pressure.
+- **ONNX Runtime conflict**: `packaging.jniLibs.pickFirsts` resolves `libonnxruntime.so` conflict between `onnxruntime-android` and the native build. The correct `.so` is in `app/src/main/jniLibs/arm64-v8a/`. `useLegacyPackaging = true` extracts native libs for ONNX discovery.
+- **AccessibilityService for text insertion** — not InputMethodService. Falls back to clipboard paste if `ACTION_SET_TEXT` fails.
+- **Thermal degradation**: `ThermalMonitor` exposes a 3-tier status (NOMINAL/WARM/HOT). WARM → CPU-only inference. HOT → pause transcription.
+- **Personal vocabulary**: `ConfusionSetCorrector` applies word-boundary replacements from Room `personal_vocabulary` table. For >20 entries, `AhoCorasickMatcher` provides O(text+matches) multi-pattern search. `PhoneticIndex` (Soundex + Levenshtein) catches phonetic near-misses.
 
-Constructor injection everywhere. No field injection except `@Inject lateinit var` in
-Android framework classes (Application, Service, Activity).
+### Room Database
 
-### Threading model
-
-- **Main/UI**: Compose rendering, state observation
-- **IO dispatcher**: Audio recording, file I/O, model loading, DataStore
-- **Default dispatcher**: Inference coordination, VAD processing, post-processing
-- **Native threads**: whisper.cpp manages its own thread pool (adaptive 2–4 threads via InferenceConfig)
-
-`TranscriptionCoordinator` serialises access to `whisper_context` via Kotlin-side `Mutex`.
-The JNI context pointer (`jlong`) is NOT thread-safe for concurrent native calls.
+- **Version**: 4
+- **Tables**: `personal_vocabulary`, `mic_access_events`
+- **Migration strategy**: Explicit `Migration` objects (e.g., `MIGRATION_3_4` adds composite index). Destructive fallback from v2.
+- **Schema export**: `room.schemaLocation` → `app/schemas/`
 
 ---
 
-## Coding standards
+## Coding Conventions
 
-### Kotlin conventions
+### Dependency Injection (Hilt)
 
-- **Kotlin 2.1.10**, target Java 17, KSP annotation processing (never kapt)
-- Trailing commas on multi-line parameter lists and collections
-- Named arguments when calling functions with 3+ parameters
-- Never use `!!` — use `requireNotNull()`, `checkNotNull()`, or `?.let { }` / `?: return`
-- Prefer `sealed interface` over `sealed class` for state hierarchies
-- Use `data class` for value objects; `data object` for singletons (e.g. `Idle`)
-- Destructure data classes where it improves clarity
-- Extensions over utility classes
-- Explicit return types on public functions
-- No wildcard imports — import each symbol individually
+- **Constructor injection only** — no `@Inject` on fields or setters
+- `@Singleton` for long-lived services: `TranscriptionCoordinator`, `ModelManager`, `SileroVadDetector`, `AudioRecorder`, `SettingsRepository`, `AccessibilityStateHolder`, `ThermalMonitor`, `VocabularyPatternCache`, `PhoneticIndex`, Room DAOs
+- `@ApplicationContext` qualifier for `Context`
+- `@ApplicationScope` qualifier for the app-level `CoroutineScope` (provided by `CoroutineScopesModule`)
+- `SafeWordApp` implements `Configuration.Provider` for `HiltWorkerFactory`
+- `SafeWordAccessibilityService` uses `@EntryPoint` for DI (accessibility services can't use `@AndroidEntryPoint`)
 
 ### Coroutines
 
-- Structured concurrency: always launch inside a `CoroutineScope` (viewModelScope, lifecycleScope, @ApplicationScope)
-- Use `StateFlow` / `MutableStateFlow` for observable state, **never** `LiveData`
-- Collect in Compose with `collectAsStateWithLifecycle()`
-- Never call `runBlocking` on the main thread
-- Use `withContext(Dispatchers.IO)` for blocking calls
-- Cancellation-safe: check `isActive` or use `ensureActive()` in long loops
+- **ViewModels**: `viewModelScope` for UI-initiated work; expose `StateFlow` via `stateIn(SharingStarted.WhileSubscribed(5_000), initialValue)`
+- **Repositories**: `Flow` from Room/DataStore; never call `.first()` on the main thread — use `withContext(Dispatchers.IO)`
+- **JNI callers**: dedicated single-thread `feedDispatcher` via `Executors.newSingleThreadExecutor()` — see `MoonshineNativeEngine.feedScope`
+- **Never catch `CancellationException`** — let structured concurrency propagate cancellation
+- Use `withTimeoutOrNull` for graceful timeout handling
+- `@ApplicationScope` scope (`SupervisorJob() + Dispatchers.Default`) for coordinator-level work that outlives individual ViewModels
 
-### Compose
+### State Management
 
-- Functional components only — no class-based views
-- State hoisting: stateless composables receive state as parameters and emit events
-- `Modifier` is always the first optional parameter
-- Use `remember` / `derivedStateOf` to avoid unnecessary recomposition
-- ViewModels expose `StateFlow<UiState>`, not individual fields
-- No side effects in composable scope — use `LaunchedEffect`, `DisposableEffect`, `SideEffect`
+- `TranscriptionState` is a sealed interface: `Idle` → `Recording` → `Done` → `Idle`, or `Error` from any state
+- `Recording` state carries `durationMs`, `amplitudeDb`, `speechProbability`, `partialText`, `insertedText`
+- All state transitions go through `TranscriptionCoordinator` which owns the `MutableStateFlow<TranscriptionState>`
+- UI observes state via `collectAsStateWithLifecycle()` in Compose
 
-### Error handling
+### Timber Logging
 
-- Prefer `Result<T>` or sealed-interface result types for expected failures
-- Use `try`/`catch` only at system boundaries (JNI, I/O, framework callbacks)
-- Whisper JNI: returns empty string or fallback JSON on failure, never throws
-- GPU init failure: silent CPU fallback, logged with `[BRANCH]` prefix
-- Log errors with `Timber.e` and `[ERROR]` prefix
+All log messages follow the format: `[PREFIX] methodName | key=value | key2=value2`
 
-### Naming conventions
+| Prefix        | Level                   | Use for                                        |
+| ------------- | ----------------------- | ---------------------------------------------- |
+| `INIT`        | `Timber.i`              | Initialization, model loading, component setup |
+| `LIFECYCLE`   | `Timber.i`              | Service/app/view lifecycle transitions         |
+| `STATE`       | `Timber.d` / `Timber.i` | State machine transitions                      |
+| `BRANCH`      | `Timber.d`              | Conditional logic, fallback paths              |
+| `VOICE`       | `Timber.d` / `Timber.i` | Dictation, voice commands                      |
+| `SETTINGS`    | `Timber.i`              | Settings reads/writes                          |
+| `ENTER`       | `Timber.d`              | Method entry points (non-trivial paths)        |
+| `EXIT`        | `Timber.i`              | Task completion, worker exit                   |
+| `PERF`        | `Timber.i`              | Latency, inference times                       |
+| `WARN`        | `Timber.w`              | Edge cases, data-loss prevention               |
+| `ERROR`       | `Timber.e`              | Exceptions, permanent failures                 |
+| `DIAGNOSTICS` | `Timber.i` / `Timber.w` | GPU capabilities, double-processing            |
+| `THERMAL`     | `Timber.w`              | Thermal throttle events                        |
 
-- Classes: PascalCase (`TranscriptionCoordinator`)
-- Functions/properties: camelCase (`optimalWhisperThreads`)
-- Constants: SCREAMING_SNAKE_CASE (`NO_SPEECH_DENSITY_THRESHOLD`)
-- Package: lowercase dot-separated (`com.safeword.android.transcription`)
-- Test classes: `{ClassName}Test` in matching package under `src/test/kotlin/`
+### Error Handling
 
----
-
-## Timber logging
-
-All log messages use structured prefixes. **Always** use these prefixes:
-
-| Prefix          | Level             | When to use                                  |
-| --------------- | ----------------- | -------------------------------------------- |
-| `[INIT]`        | `Timber.i` / `.d` | Component initialization, model loading      |
-| `[LIFECYCLE]`   | `Timber.i`        | IME/app lifecycle events, service start/stop |
-| `[STATE]`       | `Timber.d` / `.i` | State transitions (Idle→Recording, etc.)     |
-| `[ENTER]`       | `Timber.d`        | Method/pipeline entry points                 |
-| `[EXIT]`        | `Timber.i`        | Task completion, worker exit                 |
-| `[BRANCH]`      | `Timber.d`        | Conditional logic, fallback paths            |
-| `[WARN]`        | `Timber.w`        | Recoverable warnings, edge cases             |
-| `[ERROR]`       | `Timber.e`        | Errors, exceptions, permanent failures       |
-| `[SETTINGS]`    | `Timber.i`        | Settings changes, preference updates         |
-| `[VOICE]`       | `Timber.d` / `.i` | Voice commands, dictation events             |
-| `[PERF]`        | `Timber.i` / `.d` | Performance metrics, inference timings       |
-| `[KEY]`         | `Timber.v` / `.d` | Keystroke events (dev-only, verbose)         |
-| `[GESTURE]`     | `Timber.d`        | Gesture recognition events                   |
-| `[DIAGNOSTICS]` | `Timber.i` / `.w` | GPU capabilities, system checks              |
-| `[THERMAL]`     | `Timber.w` / `.d` | Thermal throttling events                    |
-| `[AUTOFILL]`    | `Timber.d`        | Autofill suggestion responses                |
-
-**Format**: `Timber.d("[PREFIX] ClassName.methodName | key=value | ...")`
-
-Timber is planted only in debug builds (`BuildConfig.DEBUG` → `DebugTree`).
-
----
-
-## Native code (C/C++)
-
-### JNI bridge — `whisper-jni.cpp`
-
-Four exported functions:
-
-1. `nativeInit(modelPath)` → Load GGML model, return context pointer (`jlong`)
-2. `nativeTranscribe(context, samples, params)` → Batch transcription → plain text
-3. `nativeTranscribeWithTimings(context, samples, params)` → JSON with segment timings
-4. `nativeFree(context)` → Release whisper context
-
-**Key configuration**:
-
-- `use_gpu = true` (Vulkan) with CPU-only retry on init failure
-- `flash_attn = true` (20–40% speedup on Vulkan)
-- `greedy.best_of = 1` (single-pass, no beam search)
-- `temperature_inc = 0.0f` (no fallback retries)
-- `no_context = true` (stateless batch mode)
-- Thread count clamped to `[1, 16]`, set by `InferenceConfig.optimalWhisperThreads()`
-
-### Build configuration — `CMakeLists.txt`
-
-- Release mode: `-O3 -DNDEBUG` with thin LTO (`-flto=thin`)
-- ARM NEON: `armv8.2-a+dotprod` enabled for arm64-v8a
-- Vulkan: ON (shaders compiled via NDK `glslc`)
-- OpenMP: ON for ARM only
-- Debug builds add `-fsanitize=address`
-
-### Thread safety
-
-`whisper_context*` is **NOT thread-safe** for concurrent calls. The Kotlin-side
-`TranscriptionCoordinator` serialises access via `Mutex`. Never call JNI methods
-concurrently on the same context.
+- Log with `Timber.e(throwable, "[ERROR] method | msg")` — exception first, then message
+- Return sealed `Result`/`StateFlow` states instead of throwing across layer boundaries
+- Room errors: let transaction rollback; catch and log at the DAO call site
+- Model download: exponential backoff with 3 retries; SHA256 verification post-download
+- Microphone: throw `SecurityException` if `RECORD_AUDIO` not granted; check in `AudioRecorder.record()`
 
 ---
 
 ## Testing
 
-### Framework
+**Framework stack**: JUnit 4 · MockK 1.13.12 · Turbine 1.1.0 · `kotlinx-coroutines-test 1.8.1`
 
-- **JUnit 4** (4.13.2) with `kotlin-test` assertions
-- **Mockk** (1.13.12) for mocking
-- **Turbine** (1.1.0) for Flow testing
-- **kotlinx-coroutines-test** (1.8.1) with `MainDispatcherRule`
+- Test files: `app/src/test/kotlin/com/safeword/android/…` — mirrors source structure
+- Naming: `{ClassName}Test.kt`
+- Coroutine tests: `runTest { }` with `MainDispatcherRule` from `util/MainDispatcherRule.kt`
+- Flow tests: `turbineScope { flow.test { … } }` or `Turbine()`
+- Mocking: `mockk<T>()` + `coEvery`, `coVerify`; use `relaxed = true` sparingly — prefer explicit stubs
+- `@OptIn(ExperimentalCoroutinesApi::class)` required for `advanceUntilIdle()` / `StandardTestDispatcher`
 
-### Test layout
+```kotlin
+@get:Rule val mainDispatcherRule = MainDispatcherRule()
 
-```
-app/src/test/kotlin/com/safeword/android/
-├── transcription/
-│   ├── ContentNormalizerTest.kt
-│   ├── TextFormatterTest.kt
-│   ├── TextPostProcessorTest.kt
-│   └── VoiceCommandDetectorTest.kt
-├── ui/screens/
-│   ├── onboarding/OnboardingViewModelTest.kt
-│   └── settings/SettingsViewModelTest.kt
-└── util/
-    └── MainDispatcherRule.kt     # TestDispatcher rule for coroutines
+@Test fun `my test description`() = runTest {
+    // arrange / act / assert
+}
 ```
 
-### Conventions
+### Existing Test Coverage
 
-- Test class: `{ClassName}Test` in matching package
-- Test method naming: `methodName descriptive scenario in plain English`() with backticks
-- Arrange–Act–Assert pattern
-- Use `runTest { }` for suspending tests
-- Use Turbine's `test { }` block for Flow assertions
-- Prefer `every { ... } returns ...` over `coEvery` when not suspending
-- Test public API, not implementation details
-
-### Running tests
-
-```bash
-# All JVM unit tests
-.\gradlew.bat :app:testDebugUnitTest
-
-# Specific test class
-.\gradlew.bat :app:testDebugUnitTest --tests "com.safeword.android.transcription.ContentNormalizerTest"
-
-# Compile check only (no execution)
-.\gradlew.bat :app:compileDebugKotlin :app:compileDebugAndroidTestKotlin
-```
+| Package          | Test files                                                                                                                                                                       |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `audio/`         | `AudioPipelineTest`                                                                                                                                                              |
+| `transcription/` | `IncrementalTextInserterTest`, `ModelLifecycleTest`, `StreamingEngineContractTest`, `TextPostProcessingPipelineTest`, `TranscriptionCoordinatorTest`, `VoiceCommandPipelineTest` |
+| `testutil/`      | `FakeAccessibilityStateHolder`, `FakeStreamingEngine`, `PipelineAssertions` (test infrastructure)                                                                                |
+| `util/`          | `MainDispatcherRule` (test infrastructure)                                                                                                                                       |
 
 ---
 
-## Build commands
+## Key Dependencies (versions in `app/build.gradle.kts`)
 
-```bash
-# Full debug build (APK)
-.\gradlew.bat :app:assembleDebug
+| Library                                                | Purpose                                   |
+| ------------------------------------------------------ | ----------------------------------------- |
+| `com.microsoft.onnxruntime:onnxruntime-android:1.23.0` | Silero VAD inference (ONNX)               |
+| `com.google.dagger:hilt-android:2.54`                  | Dependency injection                      |
+| `androidx.room:room-runtime:2.8.4`                     | Local database (KSP code gen)             |
+| `androidx.datastore:datastore-preferences:1.2.1`       | Typed preferences                         |
+| `com.jakewharton.timber:timber:5.0.1`                  | Structured logging                        |
+| `com.squareup.okhttp3:okhttp:4.12.0`                   | Model downloads with resume support       |
+| `androidx.work:work-runtime-ktx:2.11.2`                | Background model download scheduling      |
+| `androidx.media3:*:1.10.0`                             | Video playback (splash screen)            |
+| Compose BOM `2026.03.01`                               | Jetpack Compose                           |
 
-# Release build (requires signing config)
-.\gradlew.bat :app:assembleRelease
+### Native Libraries
 
-# Run all JVM unit tests
-.\gradlew.bat :app:testDebugUnitTest
-
-# Run Android lint
-.\gradlew.bat :app:lintDebug
-
-# Clean build
-.\gradlew.bat clean
-```
-
-The Gradle wrapper (`gradlew.bat` on Windows) must always be used — never a system Gradle.
-
----
-
-## Key constants and defaults
-
-From `AppSettings.kt`:
-
-| Setting                   | Default   | Description                            |
-| ------------------------- | --------- | -------------------------------------- |
-| `maxRecordingDurationSec` | 600       | Auto-stop recording ceiling (seconds)  |
-| `autoStopSilenceMs`       | 2000      | Silence duration before auto-stop (ms) |
-| `vadEnabled`              | true      | Silero VAD active                      |
-| `vadThreshold`            | 0.5       | VAD speech probability threshold       |
-| `vadMinSpeechDurationMs`  | 250       | Minimum speech to trigger detection    |
-| `vadMinSilenceDurationMs` | 100       | Minimum silence to end speech segment  |
-| `nativeVadEnabled`        | true      | whisper.cpp built-in Silero VAD (GGML) |
-| `nativeVadThreshold`      | 0.5       | Native VAD speech threshold            |
-| `nativeVadMinSpeechMs`    | 250       | Native VAD minimum speech              |
-| `nativeVadMinSilenceMs`   | 500       | Native VAD minimum silence             |
-| `nativeVadSpeechPadMs`    | 300       | Native VAD speech padding              |
-| `noSpeechThreshold`       | 0.6       | Whisper no_speech_prob suppression     |
-| `logprobThreshold`        | -1.0      | Whisper avg logprob suppression        |
-| `entropyThreshold`        | 2.4       | Whisper entropy-based suppression      |
-| `colorPalette`            | "dynamic" | Material You dynamic colour            |
-
-From `TranscriptionCoordinator.kt`:
-
-| Constant                      | Value | Description                                 |
-| ----------------------------- | ----- | ------------------------------------------- |
-| `NO_SPEECH_DENSITY_THRESHOLD` | 0.05  | Skip inference below 5% speech ratio        |
-| `BACKEND_SWITCH_HYSTERESIS`   | 3     | Consecutive slow RTFs before GPU→CPU switch |
-
-From `InferenceConfig.kt`:
-
-| Cores | Base threads          | Short clip (≤2 s) threads |
-| ----- | --------------------- | ------------------------- |
-| ≥ 6   | 4                     | 2                         |
-| < 6   | (cores−1) clamped 2–4 | 2                         |
-
-From `ModelInfo.kt`:
-
-| Model ID        | Default | Artifact                 | Size    |
-| --------------- | ------- | ------------------------ | ------- |
-| `small.en-q8_0` | Yes     | `ggml-small.en-q8_0.bin` | 252 MiB |
-| `silero-v6.2.0` | Yes     | `ggml-silero-v6.2.0.bin` | ~885 KB |
+- `app/src/main/cpp/moonshine-bridge.cpp` + `moonshine-core/` — C++ JNI bridge wrapping the open-source Moonshine C++ library; built by CMake into `libmoonshine-bridge.so`
+- `app/src/main/jniLibs/arm64-v8a/libonnxruntime.so` — manually extracted from `onnxruntime-android-1.23.0.aar` to resolve ABI conflict
+- `app/src/main/assets/silero_vad.onnx` — Silero VAD v6 model, loaded by `SileroVadDetector`
+- Moonshine model files are downloaded at runtime into `files/models/` via `ModelRepository`
 
 ---
 
-## Dependencies (production)
+## Common Pitfalls
 
-| Library               | Version    | Purpose                            |
-| --------------------- | ---------- | ---------------------------------- |
-| Jetpack Compose BOM   | 2024.12.01 | UI framework                       |
-| Material 3            | (BOM)      | Design system                      |
-| Hilt                  | 2.53.1     | Dependency injection (KSP)         |
-| Room                  | 2.6.1      | Local database (KSP)               |
-| DataStore Preferences | 1.1.1      | Key-value settings                 |
-| WorkManager           | 2.10.0     | Background model download          |
-| OkHttp                | 4.12.0     | HTTPS model download (TLS pinning) |
-| ONNX Runtime Android  | 1.17.3     | Silero VAD inference               |
-| Timber                | 5.0.1      | Structured logging                 |
-| Coroutines            | 1.8.1      | Async concurrency                  |
-| Media3 ExoPlayer      | 1.5.1      | Splash screen video                |
-
----
-
-## Common pitfalls
-
-1. **kapt vs KSP** — This project uses KSP exclusively. Never add `kapt()` dependencies.
-2. **`!!` operator** — Banned. Use `requireNotNull()` or safe-call chains.
-3. **LiveData** — Not used. All observable state is `StateFlow`.
-4. **Blocking main thread** — Never `runBlocking` on Main. Use `withContext(Dispatchers.IO)`.
-5. **JNI thread safety** — Never call whisper JNI concurrently on the same context pointer.
-6. **Model paths** — Models are stored in app-private internal storage, never external.
-7. **Native VAD path resolution** — Do not hardcode `silero_vad.onnx`; resolve native GGML VAD via `ModelRepository` using `ModelInfo.VAD_MODEL_ID`.
-8. **Overlay permissions** — `SYSTEM_ALERT_WINDOW` requires explicit user grant; OEM-specific gates exist.
-9. **Accessibility API** — Voice commands require `SafeWordAccessibilityService` to be enabled.
-10. **NDK ABI** — arm64-v8a only. Do not add x86_64 or armeabi-v7a.
-11. **Proguard** — Release builds minify. Keep rules in `proguard-rules.pro` when adding reflection.
+- **Do not use `@Inject` on fields** — constructor injection only (Hilt convention for this project)
+- **Never call `.first()` on a Flow from the main thread** — use `withContext(Dispatchers.IO)`
+- **ONNX Runtime `.so` conflict**: do not add new ONNX-dependent libraries without verifying `pickFirsts` in `app/build.gradle.kts` covers them — the correct `libonnxruntime.so` lives in `jniLibs/arm64-v8a/`
+- **ABI filter**: only `arm64-v8a` is enabled — x86/emulator builds will fail; use a real device or arm64 emulator image
+- **Lint is strict**: `warningsAsErrors = true` — fix all warnings before committing
+- **No batch/accumulation mode**: `AudioRecorder` streams directly to `onProcessedChunk`. Do not add sample buffer accumulation.
+- **Native C++ code is CMake-managed**: `app/src/main/cpp/` contains the JNI bridge and moonshine-core. The CMake build is configured in `app/build.gradle.kts`. Do not add new JNI source files without updating `CMakeLists.txt`.
+- **WorkManager initializer disabled**: `SafeWordApp` provides its own via `Configuration.Provider` — do not re-enable the default `InitializationProvider`
+- **Room schema version is 4**: Uses explicit `Migration` objects (e.g., `MIGRATION_3_4` adds composite index for vocabulary correction) and destructive fallback from v2. When adding tables or columns, increment the version and add a new `Migration`.

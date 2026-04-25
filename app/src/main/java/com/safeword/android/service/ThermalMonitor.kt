@@ -11,11 +11,20 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
+ * 3-tier thermal classification for graceful degradation.
+ *
+ * - [NOMINAL]: Full power — GPU and all threads available.
+ * - [WARM]: CPU-only, reduced thread count.
+ * - [HOT]: Pause new transcriptions entirely; show "device too hot" feedback.
+ */
+enum class ThermalTier { NOMINAL, WARM, HOT }
+
+/**
  * ThermalMonitor — observes device thermal status via [PowerManager].
  *
  * Exposes [thermalStatus] as a [StateFlow] so consumers can react to throttling.
- * At THERMAL_STATUS_MODERATE or above, the STT pipeline may reduce thread count
- * or skip optional stages (e.g. grammar correction) to lower heat generation.
+ * [thermalTier] maps Android thermal levels to a 3-tier response:
+ * NOMINAL (NONE/LIGHT), WARM (MODERATE), HOT (SEVERE+).
  */
 @Singleton
 class ThermalMonitor @Inject constructor(
@@ -29,7 +38,14 @@ class ThermalMonitor @Inject constructor(
     /** True when the device is at THERMAL_STATUS_MODERATE or higher. */
     val isThrottled: Boolean get() = _thermalStatus.value >= PowerManager.THERMAL_STATUS_MODERATE
 
-    private var registered = false
+    /** 3-tier classification derived from the raw Android thermal status. */
+    val thermalTier: ThermalTier get() = when {
+        _thermalStatus.value >= PowerManager.THERMAL_STATUS_SEVERE -> ThermalTier.HOT
+        _thermalStatus.value >= PowerManager.THERMAL_STATUS_MODERATE -> ThermalTier.WARM
+        else -> ThermalTier.NOMINAL
+    }
+
+    @Volatile private var registered = false
 
     private val listener = PowerManager.OnThermalStatusChangedListener { status ->
         val previous = _thermalStatus.value
@@ -38,7 +54,7 @@ class ThermalMonitor @Inject constructor(
             status >= PowerManager.THERMAL_STATUS_SEVERE ->
                 Timber.w("[THERMAL] ThermalMonitor | status=%s SEVERE+ — consider reducing workload", statusName(status))
             status >= PowerManager.THERMAL_STATUS_MODERATE ->
-                Timber.w("[THERMAL] ThermalMonitor | status=%s MODERATE — pipeline may skip grammar correction", statusName(status))
+                Timber.w("[THERMAL] ThermalMonitor | status=%s MODERATE — pipeline may skip SafeWord model", statusName(status))
             status < previous ->
                 Timber.d("[THERMAL] ThermalMonitor | status=%s — thermal pressure eased", statusName(status))
         }

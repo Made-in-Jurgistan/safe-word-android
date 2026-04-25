@@ -2,9 +2,9 @@ package com.safeword.android.ui.screens.splash
 
 import android.graphics.ImageDecoder
 import android.graphics.drawable.AnimatedImageDrawable
-import android.net.Uri
 import android.widget.FrameLayout
 import androidx.annotation.OptIn
+import androidx.core.net.toUri
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -25,7 +25,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -33,8 +32,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
@@ -50,11 +54,6 @@ import androidx.media3.ui.PlayerView
 import com.safeword.android.R
 import com.safeword.android.ui.theme.GlassBg
 import com.safeword.android.ui.theme.GlassDarkSurface
-import com.safeword.android.ui.theme.GlassOutlineColor
-import com.safeword.android.ui.theme.GlassPanel
-import com.safeword.android.ui.theme.GlassPanelHigh
-import com.safeword.android.ui.theme.SilverBright
-import com.safeword.android.ui.theme.SilverDim
 import kotlinx.coroutines.delay
 
 /**
@@ -65,6 +64,13 @@ import kotlinx.coroutines.delay
  * Then navigates to onboarding.
  */
 private enum class SplashPhase { NOISE, VIDEO, LOGO }
+
+/** Cobalt blue gradient stops for the video frame. */
+private val FrameBlue1 = Color(0xFF007FF9)  // Brightest — top-left highlight
+private val FrameBlue2 = Color(0xFF006BF4)
+private val FrameBlue3 = Color(0xFF0059F2)
+private val FrameBlue4 = Color(0xFF0042EF)
+private val FrameBlue5 = Color(0xFF001DEB)  // Deepest — bottom-right shadow
 
 @OptIn(UnstableApi::class)
 @Composable
@@ -86,65 +92,60 @@ fun SplashScreen(onFinished: () -> Unit) {
         when (phase) {
             SplashPhase.NOISE -> NoiseGif()
 
-            SplashPhase.VIDEO -> FramedVideoStage(
+            SplashPhase.VIDEO -> FramedStage(
                 rawResId = R.raw.safeword_start,
+                showLogo = false,
                 onVideoEnded = { phase = SplashPhase.LOGO },
+                onFinished = {},
             )
 
-            SplashPhase.LOGO -> NeonFlickerLogo(onFinished = onFinished)
+            SplashPhase.LOGO -> FramedStage(
+                rawResId = null,
+                showLogo = true,
+                onVideoEnded = {},
+                onFinished = onFinished,
+            )
         }
     }
 }
 
 // ---------- Phase 1: Animated GIF via ImageDecoder (API 28+) ----------
 
+// LocalContextResourcesRead: ImageDecoder.createSource() requires Resources — no Context-only overload exists
+@Suppress("LocalContextResourcesRead")
 @Composable
 private fun NoiseGif() {
     val context = LocalContext.current
     val drawable = remember {
         val source = ImageDecoder.createSource(context.resources, R.raw.noise)
-        val dec = ImageDecoder.decodeDrawable(source)
-        (dec as? AnimatedImageDrawable)?.also { it.start() }
+        (ImageDecoder.decodeDrawable(source) as? AnimatedImageDrawable)
     }
 
-    if (drawable != null) {
-        // Render animated drawable into a Canvas-backed composable
-        val bitmap = remember {
-            android.graphics.Bitmap.createBitmap(
-                drawable.intrinsicWidth,
-                drawable.intrinsicHeight,
-                android.graphics.Bitmap.Config.ARGB_8888,
-            )
-        }
-        val canvas = remember { android.graphics.Canvas(bitmap) }
-        var tick by remember { mutableIntStateOf(0) }
-
-        LaunchedEffect(Unit) {
-            while (true) {
-                delay(33L) // ~30 fps
-                tick++
+    DisposableEffect(drawable) {
+        drawable?.start()
+        onDispose { drawable?.stop() }
+    }
+    AndroidView(
+        factory = { ctx ->
+            android.widget.ImageView(ctx).apply {
+                setImageDrawable(drawable)
+                scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
             }
-        }
-
-        // Suppress unused-value lint — tick access forces recomposition
-        @Suppress("UNUSED_EXPRESSION")
-        tick
-
-        drawable.draw(canvas)
-        Image(
-            bitmap = bitmap.asImageBitmap(),
-            contentDescription = null,
-            modifier = Modifier.fillMaxSize(),
-            contentScale = ContentScale.Crop,
-        )
-    }
+        },
+        modifier = Modifier.fillMaxSize(),
+    )
 }
 
-// ---------- Phase 2: Video via Media3 ExoPlayer ----------
+// ---------- Phase 2 & 3: Shared framed stage ----------
 
 @OptIn(UnstableApi::class)
 @Composable
-private fun FramedVideoStage(rawResId: Int, onVideoEnded: () -> Unit) {
+private fun FramedStage(
+    rawResId: Int?,
+    showLogo: Boolean,
+    onVideoEnded: () -> Unit,
+    onFinished: () -> Unit,
+) {
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -152,20 +153,23 @@ private fun FramedVideoStage(rawResId: Int, onVideoEnded: () -> Unit) {
         contentAlignment = Alignment.Center,
     ) {
         VideoFrame(
-            modifier = Modifier
-                .fillMaxWidth()
-                .wrapContentHeight()
-                .padding(horizontal = 18.dp),
+            modifier = Modifier.fillMaxWidth(),
+            frameThickness = 36.dp,
+            cornerRadius = 28.dp,
         ) {
-            VideoPlayer(
-                rawResId = rawResId,
-                onVideoEnded = onVideoEnded,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(16f / 9f)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(Color.Black),
-            )
+            if (showLogo) {
+                NeonFlickerLogoContent(onFinished = onFinished)
+            } else if (rawResId != null) {
+                VideoPlayer(
+                    rawResId = rawResId,
+                    onVideoEnded = onVideoEnded,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(1f)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(Color.Black),
+                )
+            }
         }
     }
 }
@@ -180,7 +184,7 @@ private fun VideoPlayer(
     val context = LocalContext.current
     val exoPlayer = remember {
         ExoPlayer.Builder(context).build().apply {
-            val uri = Uri.parse("android.resource://${context.packageName}/$rawResId")
+            val uri = "android.resource://${context.packageName}/$rawResId".toUri()
             setMediaItem(MediaItem.fromUri(uri))
             playWhenReady = true
             prepare()
@@ -221,51 +225,89 @@ private fun VideoPlayer(
 @Composable
 private fun VideoFrame(
     modifier: Modifier = Modifier,
-    frameThickness: Dp = 32.dp,
-    cornerRadius: Dp = 34.dp,
+    frameThickness: Dp = 36.dp,
+    cornerRadius: Dp = 28.dp,
     content: @Composable () -> Unit,
 ) {
-    val midInset = frameThickness * 0.35f
-    val innerInset = frameThickness - midInset
-    val contentCorner = (cornerRadius - frameThickness * 0.7f).coerceAtLeast(10.dp)
+    val innerCorner = (cornerRadius - frameThickness).coerceAtLeast(8.dp)
     val outerShape = RoundedCornerShape(cornerRadius)
-    val midShape = RoundedCornerShape((cornerRadius - midInset).coerceAtLeast(12.dp))
-    val innerShape = RoundedCornerShape((cornerRadius - frameThickness).coerceAtLeast(10.dp))
+    val innerShape = RoundedCornerShape(innerCorner)
+
+    // 3D frame: gradient from bright neon-blue top-left to deep blue bottom-right,
+    // with highlight and shadow inset strokes for depth.
+    val frameBrush = Brush.linearGradient(
+        colors = listOf(FrameBlue1, FrameBlue2, FrameBlue3, FrameBlue4, FrameBlue5),
+        start = Offset.Zero,
+        end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY),
+    )
 
     Box(
         modifier = modifier
-            .background(GlassPanel, outerShape)
-            .padding(midInset),
+            .background(brush = frameBrush, shape = outerShape)
+            // Outer highlight edge (top-left light catch).
+            .border(1.5.dp, FrameBlue1.copy(alpha = 0.6f), outerShape)
+            // 3D depth: draw a bright inset highlight at the top and a dark shadow at the bottom.
+            .drawBehind {
+                val cr = cornerRadius.toPx()
+                val ft = frameThickness.toPx()
+                // Top-left highlight inset — simulates light hitting the bevel.
+                drawRoundRect(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(
+                            Color.White.copy(alpha = 0.25f),
+                            Color.Transparent,
+                        ),
+                        startY = 0f,
+                        endY = ft,
+                    ),
+                    cornerRadius = CornerRadius(cr, cr),
+                    size = Size(size.width, ft),
+                )
+                // Bottom-right shadow inset — simulates depth.
+                drawRoundRect(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(
+                            Color.Transparent,
+                            Color.Black.copy(alpha = 0.35f),
+                        ),
+                        startY = size.height - ft,
+                        endY = size.height,
+                    ),
+                    topLeft = Offset(0f, size.height - ft),
+                    cornerRadius = CornerRadius(cr, cr),
+                    size = Size(size.width, ft),
+                )
+                // Inner groove — dark ring just outside the content area.
+                val inset = ft - 2.dp.toPx()
+                val icr = innerCorner.toPx() + 2.dp.toPx()
+                drawRoundRect(
+                    color = FrameBlue5.copy(alpha = 0.7f),
+                    topLeft = Offset(inset, inset),
+                    size = Size(size.width - inset * 2, size.height - inset * 2),
+                    cornerRadius = CornerRadius(icr, icr),
+                    style = Stroke(width = 2.dp.toPx()),
+                )
+            }
+            .padding(frameThickness),
     ) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .wrapContentHeight()
-                .background(GlassPanelHigh, midShape)
-                .padding(innerInset),
+                .background(GlassDarkSurface, innerShape)
+                .border(1.dp, FrameBlue4.copy(alpha = 0.6f), innerShape)
+                .clip(innerShape),
+            contentAlignment = Alignment.Center,
         ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .wrapContentHeight()
-                    .background(GlassDarkSurface, innerShape)
-                    .border(2.dp, GlassOutlineColor.copy(alpha = 0.7f), innerShape)
-                    .border(2.dp, SilverBright.copy(alpha = 0.4f), innerShape)
-                    .border(2.dp, SilverDim.copy(alpha = 0.4f), innerShape)
-                    .padding(2.dp)
-                    .clip(RoundedCornerShape(contentCorner)),
-                contentAlignment = Alignment.Center,
-            ) {
-                content()
-            }
+            content()
         }
     }
 }
 
-// ---------- Phase 3: Logo with neon sign flicker ----------
+// ---------- Phase 3: Logo with neon sign flicker (rendered inside the frame) ----------
 
 @Composable
-private fun NeonFlickerLogo(onFinished: () -> Unit) {
+private fun NeonFlickerLogoContent(onFinished: () -> Unit) {
     // Navigate away after 2 seconds
     LaunchedEffect(Unit) {
         delay(2000L)
@@ -299,7 +341,8 @@ private fun NeonFlickerLogo(onFinished: () -> Unit) {
 
     Box(
         modifier = Modifier
-            .fillMaxSize()
+            .fillMaxWidth()
+            .aspectRatio(1f)
             .background(GlassBg),
         contentAlignment = Alignment.Center,
     ) {

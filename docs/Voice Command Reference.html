@@ -1,0 +1,1810 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Voice Command Reference — Safe Word</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      /* ── Variables ─────────────────────────────────────────────────────── */
+      :root {
+        --crimson: #c62828;
+        --crimson-bg: #ffebee;
+        --cobalt: #1565c0;
+        --cobalt-bright: #2979ff;
+        --cobalt-bg: #e8f0fe;
+        --amber: #e65100;
+        --amber-bg: #fff3e0;
+        --surface: #fafafa;
+        --surface-alt: #f3f4f6;
+        --border: #e0e0e0;
+        --border-strong: #bdbdbd;
+        --text: #1a1a1a;
+        --text-muted: #616161;
+        --text-faint: #9e9e9e;
+        --radius: 6px;
+        --radius-sm: 4px;
+      }
+
+      /* ── Reset ─────────────────────────────────────────────────────────── */
+      *,
+      *::before,
+      *::after {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      /* ── Base ──────────────────────────────────────────────────────────── */
+      body {
+        font-family:
+          'Inter',
+          -apple-system,
+          BlinkMacSystemFont,
+          'Segoe UI',
+          Roboto,
+          sans-serif;
+        font-size: 13.5px;
+        line-height: 1.6;
+        color: var(--text);
+        background: #fff;
+        max-width: 794px;
+        margin: 0 auto;
+        padding: 40px 28px 64px;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      /* ── Banner cover ────────────────────────────────────────────────── */
+      .banner {
+        background: #0d1117;
+        border-radius: var(--radius);
+        padding: 28px 32px 22px;
+        margin-bottom: 32px;
+        display: flex;
+        align-items: center;
+        gap: 22px;
+      }
+      .banner-logo {
+        width: 72px;
+        height: 72px;
+        object-fit: contain;
+        border-radius: 16px;
+        flex-shrink: 0;
+        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.45);
+      }
+      .banner-text {
+        flex: 1;
+      }
+      .banner-text h1 {
+        font-size: 26px;
+        font-weight: 700;
+        letter-spacing: -0.3px;
+        color: #ffffff;
+        margin-bottom: 0;
+      }
+      .banner-made-in {
+        text-align: right;
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--cobalt-bright);
+        letter-spacing: 0.3px;
+        margin-top: 10px;
+        opacity: 0.85;
+      }
+
+      /* ── Rule ──────────────────────────────────────────────────────────── */
+      hr.divider {
+        border: none;
+        border-top: 2px solid var(--border);
+        margin: 24px 0 32px;
+      }
+
+      /* ── Section heading bars ──────────────────────────────────────────── */
+      .section-heading {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        background: var(--cobalt);
+        color: #fff;
+        font-size: 15px;
+        font-weight: 700;
+        letter-spacing: 0.1px;
+        padding: 10px 18px;
+        border-radius: var(--radius);
+        margin: 40px 0 16px;
+        page-break-after: avoid;
+      }
+      .section-heading.blue {
+        background: var(--cobalt-bright);
+      }
+      .section-num {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(255, 255, 255, 0.25);
+        border-radius: 50%;
+        width: 26px;
+        height: 26px;
+        font-size: 13px;
+        font-weight: 700;
+        flex-shrink: 0;
+      }
+
+      /* ── Sub-headings ──────────────────────────────────────────────────── */
+      h2.intro-heading {
+        font-size: 18px;
+        font-weight: 700;
+        margin-bottom: 14px;
+        color: var(--text);
+      }
+      h3,
+      h3.sub {
+        font-size: 13.5px;
+        font-weight: 700;
+        color: var(--cobalt);
+        margin: 22px 0 9px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      h3::after,
+      h3.sub::after {
+        content: '';
+        flex: 1;
+        height: 1px;
+        background: var(--border);
+      }
+      h3.blue,
+      h3.sub.blue {
+        color: var(--cobalt-bright);
+      }
+
+      /* ── Tables ────────────────────────────────────────────────────────── */
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-bottom: 20px;
+        font-size: 13px;
+        page-break-inside: auto;
+        border-radius: var(--radius);
+        overflow: hidden;
+        border: 1px solid var(--border);
+      }
+      thead th {
+        background: var(--surface-alt);
+        text-align: left;
+        font-weight: 600;
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: var(--text-muted);
+        border-bottom: 2px solid var(--border-strong);
+        padding: 9px 14px;
+      }
+      tbody tr:nth-child(even) td {
+        background: var(--surface);
+      }
+      tbody tr:hover td {
+        background: var(--cobalt-bg);
+      }
+      td {
+        padding: 8px 14px;
+        border-bottom: 1px solid var(--border);
+        vertical-align: top;
+        line-height: 1.55;
+      }
+      tbody tr:last-child td {
+        border-bottom: none;
+      }
+      td code,
+      th code {
+        font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+        font-size: 12px;
+        background: var(--surface-alt);
+        padding: 1px 5px;
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--border);
+      }
+      .col-phrase {
+        width: 54%;
+      }
+      .col-result {
+        width: 46%;
+      }
+
+      /* ── Tier badges ───────────────────────────────────────────────────── */
+      .tier {
+        display: inline-block;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.4px;
+        padding: 2px 7px;
+        border-radius: 20px;
+        vertical-align: middle;
+        margin-left: 6px;
+        line-height: 1.4;
+      }
+      .tier-1 {
+        background: #e8f5e9;
+        color: #2e7d32;
+        border: 1px solid #a5d6a7;
+      }
+      .tier-2 {
+        background: #fff8e1;
+        color: #e65100;
+        border: 1px solid #ffe082;
+      }
+      .tier-3 {
+        background: #fce4ec;
+        color: #c62828;
+        border: 1px solid #f48fb1;
+      }
+
+      /* ── Callouts ──────────────────────────────────────────────────────── */
+      .callout {
+        display: flex;
+        gap: 12px;
+        padding: 13px 16px;
+        border-radius: var(--radius);
+        margin: 16px 0;
+        font-size: 13px;
+        line-height: 1.6;
+      }
+      .callout-icon {
+        font-size: 17px;
+        flex-shrink: 0;
+        margin-top: 1px;
+      }
+      .callout.info {
+        background: var(--cobalt-bg);
+        border-left: 4px solid var(--cobalt);
+      }
+      .callout.warn {
+        background: var(--crimson-bg);
+        border-left: 4px solid var(--crimson);
+      }
+      .callout.tip {
+        background: var(--amber-bg);
+        border-left: 4px solid var(--amber);
+      }
+      .callout strong {
+        display: block;
+        margin-bottom: 3px;
+        font-weight: 600;
+      }
+
+      /* ── Emoji cells ───────────────────────────────────────────────────── */
+      .emoji-cell {
+        font-size: 22px;
+        line-height: 1.2;
+        text-align: center;
+        width: 48px;
+      }
+
+      /* ── Footer ────────────────────────────────────────────────────────── */
+      .footer {
+        margin-top: 56px;
+        padding-top: 14px;
+        border-top: 2px solid var(--border);
+        font-size: 12px;
+        color: var(--text-faint);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .footer-right {
+        color: var(--cobalt-bright);
+        font-weight: 600;
+      }
+
+      /* ── Abbreviation dot marker ───────────────────────────────────────── */
+      abbr[title] {
+        text-decoration: underline dotted var(--text-faint);
+        cursor: help;
+      }
+
+      /* ── Print / PDF — A4 perfect ─────────────────────────────────────── */
+
+      /* Force colour backgrounds and images to render in all print engines   */
+      * {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+      }
+
+      @page {
+        size: A4 portrait;
+        /* 14 mm top/bottom, 15 mm sides — leaves 180 × 269 mm usable area */
+        margin: 14mm 15mm 16mm 15mm;
+      }
+
+      @media print {
+        /* Base reset */
+        body {
+          padding: 0;
+          max-width: none;
+          font-size: 11px;
+          line-height: 1.5;
+          background: #fff;
+        }
+
+        a {
+          color: inherit;
+          text-decoration: none;
+        }
+
+        /* Banner — keep dark background, remove screen chrome */
+        .banner {
+          border-radius: 0;
+          margin-bottom: 14px;
+          padding: 18px 20px 14px;
+          break-inside: avoid;
+        }
+        .banner-logo {
+          box-shadow: none;
+          width: 54px;
+          height: 54px;
+        }
+        .banner-text h1 {
+          font-size: 20px;
+        }
+
+        /* Section headings stay on same page as first row below */
+        .section-heading {
+          break-after: avoid;
+          margin-top: 18px;
+          margin-bottom: 8px;
+          padding: 7px 14px;
+          font-size: 12px;
+        }
+
+        /* Sub-headings stay with content below */
+        h3,
+        h3.sub {
+          break-after: avoid;
+          margin-top: 12px;
+          margin-bottom: 5px;
+        }
+
+        h2.intro-heading {
+          font-size: 14px;
+          margin-bottom: 8px;
+        }
+
+        /* Tables */
+        table {
+          margin-bottom: 10px;
+          font-size: 10.5px;
+          page-break-inside: auto;
+        }
+        thead th {
+          padding: 6px 10px;
+          font-size: 9.5px;
+        }
+        td {
+          padding: 5px 10px;
+        }
+        /* Suppress hover tint in print */
+        tbody tr:hover td {
+          background: inherit;
+        }
+        /* Keep each row together if it fits */
+        tr {
+          break-inside: avoid;
+        }
+
+        /* Callouts */
+        .callout {
+          break-inside: avoid;
+          padding: 9px 12px;
+          margin: 10px 0;
+          font-size: 10.5px;
+        }
+
+        /* Tier badges — hide (they're technical decoration) */
+        .tier {
+          display: none;
+        }
+
+        /* Footer */
+        .footer {
+          display: block;
+          text-align: center;
+          margin-top: 20px;
+          padding-top: 8px;
+        }
+
+        /* Section top spacing */
+        p[style*='margin-bottom: 14px'] {
+          margin-bottom: 6px !important;
+        }
+        p[style*='margin-bottom: 16px'] {
+          margin-bottom: 8px !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <!-- ═══════════════════════════════ BANNER ══════════════════════════════ -->
+    <div class="banner">
+      <img
+        src="../app/src/main/res/drawable-nodpi/safeword_icon.png"
+        alt="Safe Word logo"
+        class="banner-logo"
+        onerror="this.style.display = 'none'"
+      />
+      <div class="banner-text">
+        <h1>Voice Command Reference</h1>
+        <p class="banner-made-in">Made in Jurgistan</p>
+      </div>
+    </div>
+
+    <!-- ═══════════════════════════ HOW IT WORKS ═════════════════════════════ -->
+    <h2 class="intro-heading">How It Works</h2>
+    <p style="margin-bottom: 16px; color: var(--text-muted); font-size: 13.5px">
+      Just speak naturally. Safe Word listens for commands anywhere in your speech — even at the end
+      of a sentence — and handles them automatically.
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th class="col-phrase">What you say</th>
+          <th class="col-result">What happens</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>A command on its own<br /><em>"Delete last word"</em></td>
+          <td>Recognised instantly and executed — nothing is typed.</td>
+        </tr>
+        <tr>
+          <td>
+            A command at the end of a sentence<br /><em
+              >"I'll finish this later. Delete last sentence."</em
+            >
+          </td>
+          <td>The dictation is inserted first, then the command runs automatically.</td>
+        </tr>
+        <tr>
+          <td>A creative rephrasing<br /><em>"Trash the whole sentence"</em></td>
+          <td>
+            Safe Word works out the verb (<em>trash</em> = delete) and the target
+            (<em>sentence</em>) and does the right thing.
+          </td>
+        </tr>
+        <tr>
+          <td>A command with filler words<br /><em>"Um, so, delete last word"</em></td>
+          <td>
+            Filler words like <em>um, uh, so, like, well</em> at the start are ignored
+            automatically.
+          </td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="callout info">
+      <span class="callout-icon">💡</span>
+      <div>
+        <strong>You can always add a wake word or be polite</strong>
+        Prefixes like <em>"Safe Word, …"</em>, <em>"OK Safe Word …"</em>, <em>"please …"</em>,
+        <em>"can you …"</em>, and trailing sign-offs like <em>"… thanks"</em> are all stripped
+        automatically. So <em>"Safe Word, please delete last word, thanks"</em> works just fine.
+      </div>
+    </div>
+
+    <!-- ══════════════════════════ 1  DELETION ═══════════════════════════════ -->
+    <div class="section-heading">1 Deletion</div>
+    <table>
+      <tr>
+        <th style="width: 55%">Spoken phrase(s)</th>
+        <th>Action / result</th>
+      </tr>
+      <tr>
+        <td>
+          "delete that" / "delete selection" / "erase that" / "throw that away" / "throw it away"
+        </td>
+        <td>Delete active selection</td>
+      </tr>
+      <tr>
+        <td>
+          "delete last word" / "delete the last word" / "remove last word" / "remove the last word"
+          / "erase last word" / "wipe last word"
+        </td>
+        <td>Delete word before cursor</td>
+      </tr>
+      <tr>
+        <td>
+          "delete next word" / "delete the next word" / "delete word ahead" / "delete forward" /
+          "remove next word"
+        </td>
+        <td>Delete word after cursor</td>
+      </tr>
+      <tr>
+        <td>
+          "delete last sentence" / "delete the last sentence" / "remove last sentence" / "erase last
+          sentence"
+        </td>
+        <td>Delete last sentence</td>
+      </tr>
+      <tr>
+        <td>"backspace" / "back space" / "delete character" / "delete last character"</td>
+        <td>Backspace one character</td>
+      </tr>
+      <tr>
+        <td>
+          "clear all" / "clear everything" / "delete all" / "delete everything" / "erase all" /
+          "erase everything" / "remove everything" / "wipe everything" / "wipe it all" / "nuke it
+          all" / "clean slate" / "fresh start" / "start over"
+        </td>
+        <td>Clear entire field</td>
+      </tr>
+    </table>
+
+    <h3>More ways to delete</h3>
+    <table>
+      <tr>
+        <th style="width: 55%">Pattern</th>
+        <th>Result</th>
+      </tr>
+      <tr>
+        <td>
+          "erase / remove / scrap / trash / wipe / toss / drop / kill / zap / lose / discard / get
+          rid of / throw away + last word / word / entire word / whole word"
+        </td>
+        <td>→ Delete last word</td>
+      </tr>
+      <tr>
+        <td>"[DELETE verb] + that / selection / selected"</td>
+        <td>→ Delete selection</td>
+      </tr>
+      <tr>
+        <td>"[DELETE verb] + last sentence / sentence / entire sentence / whole sentence"</td>
+        <td>→ Delete last sentence</td>
+      </tr>
+      <tr>
+        <td>"[DELETE verb] + all / everything / it all"</td>
+        <td>→ Clear all</td>
+      </tr>
+      <tr>
+        <td>"[DELETE verb] + character / letter"</td>
+        <td>→ Backspace</td>
+      </tr>
+    </table>
+
+    <!-- ══════════════════════════ 2  UNDO / REDO ═══════════════════════════ -->
+    <div class="section-heading">2 Undo / Redo</div>
+    <table>
+      <tr>
+        <th style="width: 55%">Spoken phrase(s)</th>
+        <th>Action / result</th>
+      </tr>
+      <tr>
+        <td>"undo" / "undo that" / "undo it" / "revert that" / "revert it"</td>
+        <td>Undo last action</td>
+      </tr>
+      <tr>
+        <td>"scratch that" / "never mind" / "oops" / "whoops" / "my bad"</td>
+        <td>Undo (idiom)</td>
+      </tr>
+      <tr>
+        <td>"forget that" / "forget it" / "no wait" / "go back"</td>
+        <td>Undo (casual)</td>
+      </tr>
+      <tr>
+        <td>"take that back" / "take it back"</td>
+        <td>Undo (split-verb idiom)</td>
+      </tr>
+      <tr>
+        <td>"undo last word" / "undo the last word"</td>
+        <td>Delete last word (override — maps to deletion, not undo)</td>
+      </tr>
+      <tr>
+        <td>"undo last sentence" / "undo the last sentence"</td>
+        <td>Delete last sentence (override — maps to deletion, not undo)</td>
+      </tr>
+      <tr>
+        <td>"redo" / "redo that" / "redo it"</td>
+        <td>Redo last undone action</td>
+      </tr>
+      <tr>
+        <td>
+          "put that back" / "put it back" / "bring that back" / "bring it back" / "no put it back"
+        </td>
+        <td>Redo (split-verb idiom)</td>
+      </tr>
+      <tr>
+        <td>"restore that" / "restore it" / "keep that" / "actually keep that"</td>
+        <td>Redo (casual)</td>
+      </tr>
+    </table>
+
+    <!-- ══════════════════════════ 3  SELECTION ══════════════════════════════ -->
+    <div class="section-heading">3 Selection</div>
+    <table>
+      <tr>
+        <th style="width: 55%">Spoken phrase(s)</th>
+        <th>Action / result</th>
+      </tr>
+      <tr>
+        <td>
+          "select all" / "select everything" / "highlight all" / "highlight everything" / "grab all"
+          / "grab everything"
+        </td>
+        <td>Select entire text</td>
+      </tr>
+      <tr>
+        <td>
+          "select last word" / "select the last word" / "highlight last word" / "grab last word"
+        </td>
+        <td>Select word before cursor</td>
+      </tr>
+      <tr>
+        <td>"select next word" / "select the next word" / "highlight next word"</td>
+        <td>Select word after cursor</td>
+      </tr>
+      <tr>
+        <td>
+          "select last sentence" / "select the last sentence" / "select sentence" / "select the
+          sentence" / "highlight last sentence" / "highlight the last sentence" / "highlight
+          sentence"
+        </td>
+        <td>Select last sentence</td>
+      </tr>
+    </table>
+
+    <h3>More ways to select</h3>
+    <table>
+      <tr>
+        <th style="width: 55%">Pattern</th>
+        <th>Result</th>
+      </tr>
+      <tr>
+        <td>"select / highlight + entire sentence / whole sentence / previous sentence"</td>
+        <td>→ Select last sentence</td>
+      </tr>
+      <tr>
+        <td>"select / highlight + entire word / whole word / previous word"</td>
+        <td>→ Select last word</td>
+      </tr>
+      <tr>
+        <td>"select / highlight + all / everything / that / it / selection"</td>
+        <td>→ Select all</td>
+      </tr>
+    </table>
+
+    <!-- ══════════════════════ 4  NEWLINE / PARAGRAPH ═══════════════════════ -->
+    <div class="section-heading">4 Newline &amp; Paragraph</div>
+    <table>
+      <tr>
+        <th style="width: 55%">Spoken phrase(s)</th>
+        <th>Action / result</th>
+      </tr>
+      <tr>
+        <td>
+          "new line" / "newline" / "next line" / "enter" / "press enter" / "line break" / "break
+          line" / "go down" / "go to next line" / "add new line" / "add a line" / "carriage return"
+        </td>
+        <td>Insert newline (\n)</td>
+      </tr>
+      <tr>
+        <td>
+          "new paragraph" / "next paragraph" / "paragraph break" / "begin new paragraph" / "skip a
+          line" / "add paragraph" / "blank line" / "double enter"
+        </td>
+        <td>Insert double newline (\n\n)</td>
+      </tr>
+    </table>
+
+    <!-- ══════════════════════════ 5  CLIPBOARD ══════════════════════════════ -->
+    <div class="section-heading">5 Clipboard</div>
+    <table>
+      <tr>
+        <th style="width: 55%">Spoken phrase(s)</th>
+        <th>Action / result</th>
+      </tr>
+      <tr>
+        <td>
+          "copy" / "copy that" / "copy all" / "copy everything" / "copy text" / "copy selection" /
+          "grab that" / "snag that"
+        </td>
+        <td>Copy to clipboard</td>
+      </tr>
+      <tr>
+        <td>"cut" / "cut that" / "cut selection"</td>
+        <td>Cut to clipboard</td>
+      </tr>
+      <tr>
+        <td>
+          "paste" / "paste that" / "paste here" / "paste it here" / "paste text" / "insert
+          clipboard" / "put clipboard here" / "put it here" / "drop it here"
+        </td>
+        <td>Paste from clipboard</td>
+      </tr>
+    </table>
+
+    <div class="callout tip">
+      <span class="callout-icon">💡</span>
+      <div>
+        <strong>Recommended copy / cut flow</strong>
+        1) Select or highlight the text, then say <em>"copy"</em> or <em>"cut"</em>. 2) Tap where
+        you want to paste. 3) Say <em>"paste"</em> or <em>"paste here"</em>. 4) Say
+        <em>"paste"</em> again at each new position to keep inserting.
+      </div>
+    </div>
+
+    <h3>Shorthand phrases</h3>
+    <table>
+      <tr>
+        <th style="width: 55%">Pattern</th>
+        <th>Result</th>
+      </tr>
+      <tr>
+        <td>
+          "copy + that / selection / all / everything" (bare "copy" with no target also works)
+        </td>
+        <td>→ Copy</td>
+      </tr>
+      <tr>
+        <td>"cut + that / selection / all / everything" (bare "cut" with no target also works)</td>
+        <td>→ Cut</td>
+      </tr>
+      <tr>
+        <td>"paste + that" (bare "paste" with no target also works)</td>
+        <td>→ Paste</td>
+      </tr>
+    </table>
+
+    <!-- ══════════════════════ 6  TEXT FORMATTING ════════════════════════════ -->
+    <div class="section-heading">6 Text Formatting</div>
+
+    <div class="callout info">
+      <span class="callout-icon">ℹ️</span>
+      <div>
+        <strong>These apply to the last word only</strong>
+        Capitalize, uppercase, and lowercase always affect the word just before the cursor. Applying
+        them to a full sentence or selection isn't supported yet.
+      </div>
+    </div>
+
+    <table>
+      <tr>
+        <th style="width: 55%">Spoken phrase(s)</th>
+        <th>Action / result</th>
+      </tr>
+      <tr>
+        <td>
+          "capitalize" / "capitalize that" / "capitalize last word" / "cap that" / "title case"
+        </td>
+        <td>Title-case last word</td>
+      </tr>
+      <tr>
+        <td>
+          "uppercase" / "uppercase that" / "uppercase last word" / "all caps" / "make uppercase" /
+          "make it uppercase"
+        </td>
+        <td>UPPERCASE last word</td>
+      </tr>
+      <tr>
+        <td>
+          "lowercase" / "lowercase that" / "lowercase last word" / "make lowercase" / "make it
+          lowercase" / "uncapitalize"
+        </td>
+        <td>lowercase last word</td>
+      </tr>
+      <tr>
+        <td>"bold" / "bold that" / "make bold" / "make it bold"</td>
+        <td>Toggle bold (toolbar button)</td>
+      </tr>
+      <tr>
+        <td>"italic" / "italicize" / "italicize that" / "make italic" / "make it italic"</td>
+        <td>Toggle italic</td>
+      </tr>
+      <tr>
+        <td>"underline" / "underline that" / "make underline"</td>
+        <td>Toggle underline</td>
+      </tr>
+    </table>
+
+    <h3>More ways to format</h3>
+    <table>
+      <tr>
+        <th style="width: 55%">Pattern</th>
+        <th>Scope</th>
+      </tr>
+      <tr>
+        <td>"capitalize / uppercase / lowercase + that / it"</td>
+        <td>Last word</td>
+      </tr>
+      <tr>
+        <td>"capitalize / uppercase / lowercase + last word / entire word / whole word"</td>
+        <td>Last word</td>
+      </tr>
+      <tr>
+        <td>"bold / italic / italicize / underline + that / it" (bare verb also works)</td>
+        <td>Toggle formatting</td>
+      </tr>
+    </table>
+
+    <!-- ══════════════════════ 7  SEND & SESSION ════════════════════════════ -->
+    <div class="section-heading">7 Send &amp; Session Control</div>
+    <table>
+      <tr>
+        <th style="width: 55%">Spoken phrase(s)</th>
+        <th>Action / result</th>
+      </tr>
+      <tr>
+        <td>
+          "send" / "send that" / "send message" / "send it" / "submit" / "submit that" / "submit it"
+          / "post that" / "post it" / "go ahead" / "fire it off" / "fire away" / "ship it"
+        </td>
+        <td>Send / submit (clicks Send button, falls back to newline)</td>
+      </tr>
+      <tr>
+        <td>
+          "stop" / "stop listening" / "stop dictation" / "i'm done" / "done dictating" / "mic off" /
+          "turn off mic"
+        </td>
+        <td>Stop recording session</td>
+      </tr>
+      <tr>
+        <td>"finish" / "i'm finished" / "all done" / "that's all" / "finish dictating"</td>
+        <td>Stop recording (casual aliases)</td>
+      </tr>
+    </table>
+
+    <!-- ════════════════════ 8  COMMANDS WITH ARGUMENTS ═════════════════════ -->
+    <div class="section-heading">8 Commands with Arguments</div>
+    <p style="margin-bottom: 14px; color: var(--text-muted); font-size: 13.5px">
+      These commands let you include a word, phrase, or number in what you say. Safe Word picks it
+      out automatically.
+    </p>
+
+    <h3>Delete last N words</h3>
+    <table>
+      <tr>
+        <th style="width: 55%">Pattern</th>
+        <th>Effect</th>
+      </tr>
+      <tr>
+        <td>"delete / erase / remove last N words"</td>
+        <td>Delete the last N words before the cursor (N = 1 – 50)</td>
+      </tr>
+      <tr>
+        <td colspan="2" style="color: var(--text-muted)">
+          Examples: "delete last 3 words" · "erase last 10 words"
+        </td>
+      </tr>
+    </table>
+
+    <h3>Select text by content</h3>
+    <table>
+      <tr>
+        <th style="width: 55%">Pattern</th>
+        <th>Effect</th>
+      </tr>
+      <tr>
+        <td>"highlight X" / "select X"</td>
+        <td>Find and select the first occurrence of X in the focused field</td>
+      </tr>
+      <tr>
+        <td>"highlight the word X" / "select the word X"</td>
+        <td>Prefix "the word" is stripped automatically</td>
+      </tr>
+      <tr>
+        <td colspan="2" style="color: var(--text-muted)">
+          Examples: "highlight meeting notes" · "select the word hello"
+        </td>
+      </tr>
+    </table>
+
+    <h3>Search / look up</h3>
+    <table>
+      <tr>
+        <th style="width: 55%">Pattern</th>
+        <th>Effect</th>
+      </tr>
+      <tr>
+        <td>"search for X" / "search X"</td>
+        <td>Trigger in-app search or browser search for X</td>
+      </tr>
+      <tr>
+        <td>"look up X"</td>
+        <td>Synonym for search for X</td>
+      </tr>
+      <tr>
+        <td>"google X"</td>
+        <td>Synonym for search for X</td>
+      </tr>
+      <tr>
+        <td colspan="2" style="color: var(--text-muted)">
+          Examples: "search for python tutorials" · "google weather today"
+        </td>
+      </tr>
+    </table>
+
+    <!-- ═══════════════════════ 9  FIND & REPLACE ═══════════════════════════ -->
+    <div class="section-heading">9 Find &amp; Replace</div>
+    <p style="margin-bottom: 14px; color: var(--text-muted); font-size: 13.5px">
+      Replaces the first match in whatever you're typing into — not case-sensitive. Say the old and
+      new text clearly and Safe Word extracts them from your speech.
+    </p>
+    <table>
+      <tr>
+        <th style="width: 45%">Spoken pattern</th>
+        <th>Action</th>
+      </tr>
+      <tr>
+        <td>"replace X with Y"</td>
+        <td>Find first occurrence of X in the field and replace it with Y</td>
+      </tr>
+      <tr>
+        <td>"change X to Y"</td>
+        <td>Synonym for replace X with Y</td>
+      </tr>
+      <tr>
+        <td>"swap X with Y"</td>
+        <td>Synonym for replace X with Y</td>
+      </tr>
+      <tr>
+        <td>"find X and replace with Y" / "find X and replace it with Y"</td>
+        <td>Longer form — useful when X contains the word "with"</td>
+      </tr>
+      <tr>
+        <td>"find X and replace it by Y"</td>
+        <td>Alternative preposition form</td>
+      </tr>
+    </table>
+
+    <h3>Examples</h3>
+    <table>
+      <tr>
+        <th style="width: 45%">You say</th>
+        <th>Effect</th>
+      </tr>
+      <tr>
+        <td>"replace hello with hi"</td>
+        <td>"hello world" → "hi world"</td>
+      </tr>
+      <tr>
+        <td>"change New York to NYC"</td>
+        <td>"I live in New York" → "I live in NYC"</td>
+      </tr>
+      <tr>
+        <td>"swap their with there"</td>
+        <td>First "their" → "there"</td>
+      </tr>
+      <tr>
+        <td>"find good and replace it with great"</td>
+        <td>"good morning" → "great morning"</td>
+      </tr>
+    </table>
+
+    <!-- ════════════════════ 10  MIX & MATCH COMMANDS ════════════════════════ -->
+    <div class="section-heading">10 Mix &amp; Match Commands</div>
+    <p style="margin-bottom: 14px; color: var(--text-muted); font-size: 13.5px">
+      You don't have to use the exact phrases listed above. Combine any action word with any target
+      word — up to 8 words total. Small words like <em>the, a, my, one</em> in between are ignored.
+    </p>
+
+    <h3>Action words</h3>
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 30%">What you want to do</th>
+          <th>Words that work</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Delete something</td>
+          <td>
+            "delete", "erase", "remove", "scrap", "trash", "wipe", "toss", "drop", "kill", "zap",
+            "lose", "discard", "get rid of", "throw away"
+          </td>
+        </tr>
+        <tr>
+          <td>Undo</td>
+          <td>"undo", "scratch", "revert", "take back"</td>
+        </tr>
+        <tr>
+          <td>Redo</td>
+          <td>"redo", "restore", "put back", "bring back"</td>
+        </tr>
+        <tr>
+          <td>Select / highlight</td>
+          <td>"select", "highlight"</td>
+        </tr>
+        <tr>
+          <td>Copy</td>
+          <td>"copy"</td>
+        </tr>
+        <tr>
+          <td>Cut</td>
+          <td>"cut"</td>
+        </tr>
+        <tr>
+          <td>Paste</td>
+          <td>"paste"</td>
+        </tr>
+        <tr>
+          <td>Clear all</td>
+          <td>"clear", "nuke", "start over", "start fresh"</td>
+        </tr>
+        <tr>
+          <td>Bold</td>
+          <td>"bold"</td>
+        </tr>
+        <tr>
+          <td>Italic</td>
+          <td>"italic", "italicize"</td>
+        </tr>
+        <tr>
+          <td>Underline</td>
+          <td>"underline"</td>
+        </tr>
+        <tr>
+          <td>Capitalize</td>
+          <td>"capitalize"</td>
+        </tr>
+        <tr>
+          <td>Uppercase</td>
+          <td>"uppercase"</td>
+        </tr>
+        <tr>
+          <td>Lowercase</td>
+          <td>"lowercase"</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Target words</h3>
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 30%">What you're referring to</th>
+          <th>Words that mean it</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>The selected text or last thing typed</td>
+          <td>"that", "it", "this"</td>
+        </tr>
+        <tr>
+          <td>The word before the cursor</td>
+          <td>"last word", "previous word", "word", "entire word", "whole word"</td>
+        </tr>
+        <tr>
+          <td>The sentence before the cursor</td>
+          <td>
+            "last sentence", "previous sentence", "sentence", "entire sentence", "whole sentence"
+          </td>
+        </tr>
+        <tr>
+          <td>Everything in the field</td>
+          <td>"all", "everything", "it all"</td>
+        </tr>
+        <tr>
+          <td>A single character</td>
+          <td>"character", "letter", "last character", "last letter"</td>
+        </tr>
+        <tr>
+          <td>The current selection</td>
+          <td>"selection", "selected"</td>
+        </tr>
+        <tr>
+          <td>Nothing — just the verb alone</td>
+          <td>Defaults to the last word, or the whole field for clear / copy</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <!-- ═══════════════════════ 11  SPOKEN PUNCTUATION ══════════════════════ -->
+    <div class="section-heading">11 Spoken Punctuation</div>
+    <p style="margin-bottom: 14px; color: var(--text-muted); font-size: 13.5px">
+      Say any of these as a standalone phrase or at the end of a sentence. Capitalisation doesn't
+      matter.
+    </p>
+    <table>
+      <tr>
+        <th>Spoken phrase</th>
+        <th>Inserts</th>
+        <th>Description</th>
+      </tr>
+      <tr>
+        <td>"period" / "full stop" / "dot"</td>
+        <td><code>. </code></td>
+        <td>Period + space</td>
+      </tr>
+      <tr>
+        <td>"comma" / "add a comma"</td>
+        <td><code>,</code></td>
+        <td>Comma</td>
+      </tr>
+      <tr>
+        <td>"exclamation point" / "exclamation mark"</td>
+        <td><code>!</code></td>
+        <td>Exclamation mark</td>
+      </tr>
+      <tr>
+        <td>"question mark"</td>
+        <td><code>?</code></td>
+        <td>Question mark</td>
+      </tr>
+      <tr>
+        <td>"colon"</td>
+        <td><code>:</code></td>
+        <td>Colon</td>
+      </tr>
+      <tr>
+        <td>"semicolon"</td>
+        <td><code>;</code></td>
+        <td>Semicolon</td>
+      </tr>
+      <tr>
+        <td>"ellipsis" / "dot dot dot"</td>
+        <td><code>…</code></td>
+        <td>Ellipsis</td>
+      </tr>
+      <tr>
+        <td>"open parenthesis" / "open paren"</td>
+        <td><code>(</code></td>
+        <td>Open paren</td>
+      </tr>
+      <tr>
+        <td>"close parenthesis" / "close paren"</td>
+        <td><code>)</code></td>
+        <td>Close paren</td>
+      </tr>
+      <tr>
+        <td>"open bracket"</td>
+        <td><code>[</code></td>
+        <td>Open square bracket</td>
+      </tr>
+      <tr>
+        <td>"close bracket"</td>
+        <td><code>]</code></td>
+        <td>Close square bracket</td>
+      </tr>
+      <tr>
+        <td>"open brace"</td>
+        <td><code>{</code></td>
+        <td>Open curly brace</td>
+      </tr>
+      <tr>
+        <td>"close brace"</td>
+        <td><code>}</code></td>
+        <td>Close curly brace</td>
+      </tr>
+      <tr>
+        <td>"less than"</td>
+        <td><code>&lt;</code></td>
+        <td>Less-than / angle bracket</td>
+      </tr>
+      <tr>
+        <td>"greater than"</td>
+        <td><code>&gt;</code></td>
+        <td>Greater-than</td>
+      </tr>
+      <tr>
+        <td>"quote" / "open quote" / "close quote"</td>
+        <td><code>"</code></td>
+        <td>Double quote</td>
+      </tr>
+      <tr>
+        <td>"apostrophe" / "single quote" / "open single quote" / "close single quote"</td>
+        <td><code>'</code></td>
+        <td>Apostrophe</td>
+      </tr>
+      <tr>
+        <td>"hyphen" / "minus" / "minus sign"</td>
+        <td><code>-</code></td>
+        <td>Hyphen / minus</td>
+      </tr>
+      <tr>
+        <td>"dash" / "em dash"</td>
+        <td><code> — </code></td>
+        <td>Em dash (spaced)</td>
+      </tr>
+      <tr>
+        <td>"en dash"</td>
+        <td><code>–</code></td>
+        <td>En dash</td>
+      </tr>
+      <tr>
+        <td>"underscore"</td>
+        <td><code>_</code></td>
+        <td>Underscore</td>
+      </tr>
+      <tr>
+        <td>"space"</td>
+        <td><code> </code></td>
+        <td>Space character</td>
+      </tr>
+      <tr>
+        <td>"tab"</td>
+        <td><code>⇥</code></td>
+        <td>Tab character</td>
+      </tr>
+      <tr>
+        <td>"plus" / "plus sign"</td>
+        <td><code>+</code></td>
+        <td>Plus</td>
+      </tr>
+      <tr>
+        <td>"equals" / "equals sign" / "equal sign"</td>
+        <td><code>=</code></td>
+        <td>Equals</td>
+      </tr>
+      <tr>
+        <td>"tilde"</td>
+        <td><code>~</code></td>
+        <td>Tilde</td>
+      </tr>
+      <tr>
+        <td>"asterisk"</td>
+        <td><code>*</code></td>
+        <td>Asterisk</td>
+      </tr>
+      <tr>
+        <td>"slash" / "forward slash"</td>
+        <td><code>/</code></td>
+        <td>Forward slash</td>
+      </tr>
+      <tr>
+        <td>"backslash"</td>
+        <td><code>\</code></td>
+        <td>Backslash</td>
+      </tr>
+      <tr>
+        <td>"pipe"</td>
+        <td><code>|</code></td>
+        <td>Pipe / vertical bar</td>
+      </tr>
+      <tr>
+        <td>"caret"</td>
+        <td><code>^</code></td>
+        <td>Caret</td>
+      </tr>
+      <tr>
+        <td>"percent" / "percent sign"</td>
+        <td><code>%</code></td>
+        <td>Percent</td>
+      </tr>
+      <tr>
+        <td>"ampersand"</td>
+        <td><code>&amp;</code></td>
+        <td>Ampersand</td>
+      </tr>
+      <tr>
+        <td>"at sign"</td>
+        <td><code>@</code></td>
+        <td>At sign</td>
+      </tr>
+      <tr>
+        <td>"hashtag" / "hash" / "pound sign" / "octothorpe"</td>
+        <td><code>#</code></td>
+        <td>Hash / number sign</td>
+      </tr>
+      <tr>
+        <td>"dollar" / "dollar sign"</td>
+        <td><code>$</code></td>
+        <td>Dollar sign</td>
+      </tr>
+      <tr>
+        <td>"euro" / "euro sign"</td>
+        <td><code>€</code></td>
+        <td>Euro sign</td>
+      </tr>
+      <tr>
+        <td>"pound sterling" / "pounds sterling"</td>
+        <td><code>£</code></td>
+        <td>Pound sterling</td>
+      </tr>
+      <tr>
+        <td>"cent sign"</td>
+        <td><code>¢</code></td>
+        <td>Cent sign</td>
+      </tr>
+      <tr>
+        <td>"yen sign"</td>
+        <td><code>¥</code></td>
+        <td>Yen sign</td>
+      </tr>
+      <tr>
+        <td>"degree sign"</td>
+        <td><code>°</code></td>
+        <td>Degree</td>
+      </tr>
+      <tr>
+        <td>"copyright sign"</td>
+        <td><code>©</code></td>
+        <td>Copyright</td>
+      </tr>
+      <tr>
+        <td>"trademark"</td>
+        <td><code>™</code></td>
+        <td>Trademark</td>
+      </tr>
+      <tr>
+        <td>"registered trademark" / "registered sign"</td>
+        <td><code>®</code></td>
+        <td>Registered</td>
+      </tr>
+      <tr>
+        <td>"bullet point"</td>
+        <td><code>•</code></td>
+        <td>Bullet point</td>
+      </tr>
+      <tr>
+        <td>"right arrow"</td>
+        <td><code>→</code></td>
+        <td>Right arrow</td>
+      </tr>
+      <tr>
+        <td>"left arrow"</td>
+        <td><code>←</code></td>
+        <td>Left arrow</td>
+      </tr>
+      <tr>
+        <td>"backtick" / "grave" / "back quote"</td>
+        <td><code>`</code></td>
+        <td>Backtick</td>
+      </tr>
+      <tr>
+        <td>"pilcrow"</td>
+        <td><code>¶</code></td>
+        <td>Paragraph mark</td>
+      </tr>
+      <tr>
+        <td>"section sign"</td>
+        <td><code>§</code></td>
+        <td>Section sign</td>
+      </tr>
+      <tr>
+        <td>"multiplication sign"</td>
+        <td><code>×</code></td>
+        <td>Multiplication ×</td>
+      </tr>
+      <tr>
+        <td>"division sign"</td>
+        <td><code>÷</code></td>
+        <td>Division ÷</td>
+      </tr>
+      <tr>
+        <td>"plus or minus"</td>
+        <td><code>±</code></td>
+        <td>Plus / minus ±</td>
+      </tr>
+      <tr>
+        <td>"not equal to"</td>
+        <td><code>≠</code></td>
+        <td>Not equal ≠</td>
+      </tr>
+    </table>
+
+    <!-- ═══════════════════════ 12  SPOKEN EMOJI ════════════════════════════ -->
+    <div class="section-heading">12 Spoken Emoji</div>
+    <p style="margin-bottom: 14px; color: var(--text-muted); font-size: 13.5px">
+      Say any phrase below and Safe Word types the emoji for you. Common internet shorthand (<em
+        >lol, lmao, omg, smh, gg, rip, fyi, ngl</em
+      >) works without saying "emoji".
+    </p>
+    <table>
+      <tr>
+        <th>Spoken phrase</th>
+        <th>Emoji</th>
+        <th>Description</th>
+      </tr>
+      <tr>
+        <td>
+          "smiley emoji" / "smiley face emoji" / "smile emoji" / "happy emoji" / "blush emoji"
+        </td>
+        <td style="font-size: 24px">😊</td>
+        <td>Smiley / happy</td>
+      </tr>
+      <tr>
+        <td>"grin emoji"</td>
+        <td style="font-size: 24px">😁</td>
+        <td>Grinning</td>
+      </tr>
+      <tr>
+        <td>"laugh emoji" / "crying laughing emoji" / "tears of joy emoji" / "lol"</td>
+        <td style="font-size: 24px">😂</td>
+        <td>Tears of joy</td>
+      </tr>
+      <tr>
+        <td>"rofl emoji" / "lmao"</td>
+        <td style="font-size: 24px">🤣</td>
+        <td>ROFL</td>
+      </tr>
+      <tr>
+        <td>"wink emoji"</td>
+        <td style="font-size: 24px">😉</td>
+        <td>Wink</td>
+      </tr>
+      <tr>
+        <td>"heart eyes emoji"</td>
+        <td style="font-size: 24px">😍</td>
+        <td>Heart eyes</td>
+      </tr>
+      <tr>
+        <td>"kiss emoji"</td>
+        <td style="font-size: 24px">😘</td>
+        <td>Kissing face</td>
+      </tr>
+      <tr>
+        <td>"tongue out emoji"</td>
+        <td style="font-size: 24px">😜</td>
+        <td>Tongue out</td>
+      </tr>
+      <tr>
+        <td>"cool emoji" / "sunglasses emoji"</td>
+        <td style="font-size: 24px">😎</td>
+        <td>Cool / sunglasses</td>
+      </tr>
+      <tr>
+        <td>"thinking emoji"</td>
+        <td style="font-size: 24px">🤔</td>
+        <td>Thinking</td>
+      </tr>
+      <tr>
+        <td>"eye roll emoji"</td>
+        <td style="font-size: 24px">🙄</td>
+        <td>Eye roll</td>
+      </tr>
+      <tr>
+        <td>"sad emoji"</td>
+        <td style="font-size: 24px">😢</td>
+        <td>Sad</td>
+      </tr>
+      <tr>
+        <td>"crying emoji"</td>
+        <td style="font-size: 24px">😭</td>
+        <td>Loudly crying</td>
+      </tr>
+      <tr>
+        <td>"angry emoji"</td>
+        <td style="font-size: 24px">😠</td>
+        <td>Angry</td>
+      </tr>
+      <tr>
+        <td>"shocked emoji" / "scream emoji" / "omg"</td>
+        <td style="font-size: 24px">😱</td>
+        <td>Shocked / scream</td>
+      </tr>
+      <tr>
+        <td>"skull emoji"</td>
+        <td style="font-size: 24px">💀</td>
+        <td>Skull</td>
+      </tr>
+      <tr>
+        <td>"clown emoji"</td>
+        <td style="font-size: 24px">🤡</td>
+        <td>Clown</td>
+      </tr>
+      <tr>
+        <td>"nerd emoji"</td>
+        <td style="font-size: 24px">🤓</td>
+        <td>Nerd</td>
+      </tr>
+      <tr>
+        <td>"poop emoji"</td>
+        <td style="font-size: 24px">💩</td>
+        <td>Poop</td>
+      </tr>
+      <tr>
+        <td>"sleeping face emoji"</td>
+        <td style="font-size: 24px">😴</td>
+        <td>Sleeping</td>
+      </tr>
+      <tr>
+        <td>"angel face emoji"</td>
+        <td style="font-size: 24px">😇</td>
+        <td>Angel halo</td>
+      </tr>
+      <tr>
+        <td>"devil face emoji"</td>
+        <td style="font-size: 24px">😈</td>
+        <td>Devil horns</td>
+      </tr>
+      <tr>
+        <td>"alien emoji"</td>
+        <td style="font-size: 24px">👽</td>
+        <td>Alien</td>
+      </tr>
+      <tr>
+        <td>"thumbs up emoji" / "thumbs emoji"</td>
+        <td style="font-size: 24px">👍</td>
+        <td>Thumbs up</td>
+      </tr>
+      <tr>
+        <td>"thumbs down emoji"</td>
+        <td style="font-size: 24px">👎</td>
+        <td>Thumbs down</td>
+      </tr>
+      <tr>
+        <td>"clap emoji"</td>
+        <td style="font-size: 24px">👏</td>
+        <td>Clapping</td>
+      </tr>
+      <tr>
+        <td>"wave emoji"</td>
+        <td style="font-size: 24px">👋</td>
+        <td>Wave</td>
+      </tr>
+      <tr>
+        <td>"high five emoji"</td>
+        <td style="font-size: 24px">🙌</td>
+        <td>Raised hands</td>
+      </tr>
+      <tr>
+        <td>"pray emoji"</td>
+        <td style="font-size: 24px">🙏</td>
+        <td>Folded hands</td>
+      </tr>
+      <tr>
+        <td>"handshake emoji"</td>
+        <td style="font-size: 24px">🤝</td>
+        <td>Handshake</td>
+      </tr>
+      <tr>
+        <td>"fist bump emoji"</td>
+        <td style="font-size: 24px">🤜</td>
+        <td>Fist bump</td>
+      </tr>
+      <tr>
+        <td>"middle finger emoji"</td>
+        <td style="font-size: 24px">🖕</td>
+        <td>Middle finger</td>
+      </tr>
+      <tr>
+        <td>"ok emoji"</td>
+        <td style="font-size: 24px">👌</td>
+        <td>OK hand</td>
+      </tr>
+      <tr>
+        <td>"peace emoji"</td>
+        <td style="font-size: 24px">✌️</td>
+        <td>Peace sign</td>
+      </tr>
+      <tr>
+        <td>"muscle emoji"</td>
+        <td style="font-size: 24px">💪</td>
+        <td>Muscle</td>
+      </tr>
+      <tr>
+        <td>"point up emoji"</td>
+        <td style="font-size: 24px">☝️</td>
+        <td>Point up</td>
+      </tr>
+      <tr>
+        <td>"heart emoji" / "red heart emoji"</td>
+        <td style="font-size: 24px">❤️</td>
+        <td>Red heart</td>
+      </tr>
+      <tr>
+        <td>"broken heart emoji"</td>
+        <td style="font-size: 24px">💔</td>
+        <td>Broken heart</td>
+      </tr>
+      <tr>
+        <td>"fire emoji"</td>
+        <td style="font-size: 24px">🔥</td>
+        <td>Fire</td>
+      </tr>
+      <tr>
+        <td>"sparkle emoji"</td>
+        <td style="font-size: 24px">✨</td>
+        <td>Sparkles</td>
+      </tr>
+      <tr>
+        <td>"party emoji"</td>
+        <td style="font-size: 24px">🎉</td>
+        <td>Party popper</td>
+      </tr>
+      <tr>
+        <td>"confetti emoji"</td>
+        <td style="font-size: 24px">🎊</td>
+        <td>Confetti ball</td>
+      </tr>
+      <tr>
+        <td>"trophy emoji" / "gg"</td>
+        <td style="font-size: 24px">🏆</td>
+        <td>Trophy</td>
+      </tr>
+      <tr>
+        <td>"star emoji"</td>
+        <td style="font-size: 24px">⭐</td>
+        <td>Star</td>
+      </tr>
+      <tr>
+        <td>"hundred emoji"</td>
+        <td style="font-size: 24px">💯</td>
+        <td>100 / perfect</td>
+      </tr>
+      <tr>
+        <td>"check emoji" / "checkmark emoji"</td>
+        <td style="font-size: 24px">✅</td>
+        <td>Check mark</td>
+      </tr>
+      <tr>
+        <td>"x emoji"</td>
+        <td style="font-size: 24px">❌</td>
+        <td>Cross mark</td>
+      </tr>
+      <tr>
+        <td>"warning emoji"</td>
+        <td style="font-size: 24px">⚠️</td>
+        <td>Warning</td>
+      </tr>
+      <tr>
+        <td>"question mark emoji"</td>
+        <td style="font-size: 24px">❓</td>
+        <td>Question</td>
+      </tr>
+      <tr>
+        <td>"exclamation emoji"</td>
+        <td style="font-size: 24px">❗</td>
+        <td>Exclamation</td>
+      </tr>
+      <tr>
+        <td>"eyes emoji"</td>
+        <td style="font-size: 24px">👀</td>
+        <td>Eyes</td>
+      </tr>
+      <tr>
+        <td>"shrug emoji" / "smh"</td>
+        <td style="font-size: 24px">🤷</td>
+        <td>Shrug</td>
+      </tr>
+      <tr>
+        <td>"facepalm emoji"</td>
+        <td style="font-size: 24px">🤦</td>
+        <td>Facepalm</td>
+      </tr>
+      <tr>
+        <td>"sun emoji"</td>
+        <td style="font-size: 24px">☀️</td>
+        <td>Sun</td>
+      </tr>
+      <tr>
+        <td>"rainbow emoji"</td>
+        <td style="font-size: 24px">🌈</td>
+        <td>Rainbow</td>
+      </tr>
+      <tr>
+        <td>"coffee emoji"</td>
+        <td style="font-size: 24px">☕</td>
+        <td>Coffee</td>
+      </tr>
+      <tr>
+        <td>"pizza emoji"</td>
+        <td style="font-size: 24px">🍕</td>
+        <td>Pizza</td>
+      </tr>
+      <tr>
+        <td>"hamburger emoji"</td>
+        <td style="font-size: 24px">🍔</td>
+        <td>Hamburger</td>
+      </tr>
+      <tr>
+        <td>"cake emoji"</td>
+        <td style="font-size: 24px">🎂</td>
+        <td>Birthday cake</td>
+      </tr>
+      <tr>
+        <td>"cake slice emoji"</td>
+        <td style="font-size: 24px">🍰</td>
+        <td>Cake slice</td>
+      </tr>
+      <tr>
+        <td>"beer emoji"</td>
+        <td style="font-size: 24px">🍺</td>
+        <td>Beer</td>
+      </tr>
+      <tr>
+        <td>"dog emoji"</td>
+        <td style="font-size: 24px">🐶</td>
+        <td>Dog face</td>
+      </tr>
+      <tr>
+        <td>"cat emoji"</td>
+        <td style="font-size: 24px">🐱</td>
+        <td>Cat face</td>
+      </tr>
+      <tr>
+        <td>"mouse emoji"</td>
+        <td style="font-size: 24px">🐭</td>
+        <td>Mouse face</td>
+      </tr>
+      <tr>
+        <td>"lion emoji"</td>
+        <td style="font-size: 24px">🦁</td>
+        <td>Lion</td>
+      </tr>
+      <tr>
+        <td>"shark emoji"</td>
+        <td style="font-size: 24px">🦈</td>
+        <td>Shark</td>
+      </tr>
+      <tr>
+        <td>"robot emoji"</td>
+        <td style="font-size: 24px">🤖</td>
+        <td>Robot</td>
+      </tr>
+      <tr>
+        <td>"rocket emoji"</td>
+        <td style="font-size: 24px">🚀</td>
+        <td>Rocket</td>
+      </tr>
+      <tr>
+        <td>"money emoji"</td>
+        <td style="font-size: 24px">💰</td>
+        <td>Money bag</td>
+      </tr>
+      <tr>
+        <td>"ghost emoji"</td>
+        <td style="font-size: 24px">👻</td>
+        <td>Ghost</td>
+      </tr>
+      <tr>
+        <td>"brain emoji"</td>
+        <td style="font-size: 24px">🧠</td>
+        <td>Brain</td>
+      </tr>
+      <tr>
+        <td>"gem emoji"</td>
+        <td style="font-size: 24px">💎</td>
+        <td>Gem stone</td>
+      </tr>
+      <tr>
+        <td>"boom emoji"</td>
+        <td style="font-size: 24px">💥</td>
+        <td>Boom / collision</td>
+      </tr>
+      <tr>
+        <td>"rose emoji"</td>
+        <td style="font-size: 24px">🌹</td>
+        <td>Rose</td>
+      </tr>
+      <tr>
+        <td>"four leaf clover emoji"</td>
+        <td style="font-size: 24px">🍀</td>
+        <td>Four-leaf clover</td>
+      </tr>
+      <tr>
+        <td>"computer mouse emoji"</td>
+        <td style="font-size: 24px">🖱️</td>
+        <td>Computer mouse</td>
+      </tr>
+      <tr>
+        <td>"rip"</td>
+        <td style="font-size: 24px">🪦</td>
+        <td>Headstone (RIP)</td>
+      </tr>
+      <tr>
+        <td>"fyi"</td>
+        <td style="font-size: 24px">💡</td>
+        <td>Light bulb (FYI)</td>
+      </tr>
+      <tr>
+        <td>"ngl"</td>
+        <td style="font-size: 24px">😬</td>
+        <td>Grimacing (NGL)</td>
+      </tr>
+    </table>
+
+    <!-- ═══════════════════════════ FOOTER ══════════════════════════════════ -->
+    <div class="footer">
+      Safe Word · On-device voice dictation · All commands fire without an internet connection ·
+      Auto-generated from source code
+    </div>
+  </body>
+</html>

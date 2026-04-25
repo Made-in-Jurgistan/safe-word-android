@@ -7,16 +7,17 @@ import androidx.work.Data
 import androidx.work.WorkerParameters
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
+import kotlinx.coroutines.CancellationException
 import timber.log.Timber
 
 /**
  * ModelDownloadWorker — WorkManager worker for reliable model downloads.
  * Continues downloading even if the app is backgrounded or killed.
  *
- * Retry strategy: WorkManager retries up to 3 times on failure (handles process death /
+ * Retry strategy: WorkManager retries up to 5 times on failure (handles process death /
  * network changes), while [ModelRepository.downloadModel] retries up to 3 times internally
  * with exponential backoff (handles transient server errors within a single attempt).
- * Maximum total attempts per enqueue cycle: 3 (Worker) × 3 (Repository) = 9.
+ * Maximum total attempts per enqueue cycle: 5 (Worker) × 3 (Repository) = 15.
  */
 @HiltWorker
 class ModelDownloadWorker @AssistedInject constructor(
@@ -42,6 +43,12 @@ class ModelDownloadWorker @AssistedInject constructor(
                 return Result.failure()
             }
 
+        // Hard ceiling: give up after 5 attempts to avoid infinite battery drain.
+        if (runAttemptCount >= 5) {
+            Timber.e("[DOWNLOAD] doWork | reached max retries=%d, giving up | modelId=%s", runAttemptCount, modelId)
+            return Result.failure()
+        }
+
         // Fast-path: skip network entirely if model already on disk
         if (modelRepository.isModelDownloaded(modelId)) {
             Timber.i("[INIT] doWork | model already present, skipping download modelId=%s", modelId)
@@ -59,15 +66,11 @@ class ModelDownloadWorker @AssistedInject constructor(
                 Timber.w("[DOWNLOAD] doWork | failed, will retry modelId=%s attempt=%d", modelId, runAttemptCount + 1)
                 Result.retry()
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Timber.e(e, "[DOWNLOAD] doWork | error modelId=%s attempt=%d", modelId, runAttemptCount + 1)
-            if (runAttemptCount < 3) {
-                Timber.d("[DOWNLOAD] doWork | scheduling retry attempt=%d", runAttemptCount + 2)
-                Result.retry()
-            } else {
-                Timber.e("[DOWNLOAD] doWork | exhausted retries modelId=%s maxAttempts=3", modelId)
-                Result.failure()
-            }
+            Result.retry()
         }
     }
 }

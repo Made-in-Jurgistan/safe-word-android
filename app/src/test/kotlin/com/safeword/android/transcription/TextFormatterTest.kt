@@ -3,159 +3,185 @@ package com.safeword.android.transcription
 import org.junit.Test
 import kotlin.test.assertEquals
 
+/**
+ * Unit tests for [TextFormatter] — whitespace normalization.
+ *
+ * Covers multi-space collapse, trim, inter-sentence spacing, trailing space,
+ * and edge cases. Sentence-case and pronoun-I have been removed.
+ */
 class TextFormatterTest {
 
-    // -------------------------------------------------------------------------
-    // Edge cases
-    // -------------------------------------------------------------------------
+    // ════════════════════════════════════════════════════════════════════
+    //  No sentence-case capitalization (passthrough)
+    // ════════════════════════════════════════════════════════════════════
 
     @Test
-    fun `empty string returns empty`() {
+    fun `format does not capitalize first letter`() {
+        assertEquals("hello ", TextFormatter.format("hello"))
+    }
+
+    @Test
+    fun `format does not capitalize after period`() {
+        assertEquals("hello. world ", TextFormatter.format("hello. world"))
+    }
+
+    @Test
+    fun `format does not capitalize after exclamation mark`() {
+        assertEquals("wow! great ", TextFormatter.format("wow! great"))
+    }
+
+    @Test
+    fun `format does not capitalize after question mark`() {
+        assertEquals("really? yes ", TextFormatter.format("really? yes"))
+    }
+
+    @Test
+    fun `format does not capitalize after ellipsis`() {
+        assertEquals("well\u2026 okay ", TextFormatter.format("well\u2026 okay"))
+    }
+
+    @Test
+    fun `format does not capitalize after newline`() {
+        assertEquals("hello.\nworld ", TextFormatter.format("hello.\nworld"))
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //  No pronoun "I" fix (passthrough)
+    // ════════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `format does not capitalize pronoun I`() {
+        assertEquals("i think i should go ", TextFormatter.format("i think i should go"))
+    }
+
+    @Test
+    fun `format does not alter I inside word`() {
+        assertEquals("the item is nice ", TextFormatter.format("the item is nice"))
+    }
+
+    @Test
+    fun `format does not capitalize I before punctuation`() {
+        assertEquals("did i? ", TextFormatter.format("did i?"))
+    }
+
+    @Test
+    fun `format does not capitalize I at end of sentence`() {
+        assertEquals("it is i ", TextFormatter.format("it is i"))
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //  No trailing punctuation enforcement (passthrough)
+    // ════════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `format does not add period when no terminal punctuation`() {
+        assertEquals("hello world ", TextFormatter.format("hello world"))
+    }
+
+    @Test
+    fun `format preserves existing period`() {
+        assertEquals("hello world. ", TextFormatter.format("hello world."))
+    }
+
+    @Test
+    fun `format preserves existing question mark`() {
+        assertEquals("are you sure? ", TextFormatter.format("are you sure?"))
+    }
+
+    @Test
+    fun `format preserves existing exclamation`() {
+        assertEquals("watch out! ", TextFormatter.format("watch out!"))
+    }
+
+    @Test
+    fun `format preserves existing ellipsis`() {
+        assertEquals("well\u2026 ", TextFormatter.format("well\u2026"))
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //  Trailing space
+    // ════════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `format appends trailing space`() {
+        val result = TextFormatter.format("hello")
+        assertEquals(' ', result.last())
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //  Whitespace normalization
+    // ════════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `format collapses multiple spaces`() {
+        assertEquals("hello world ", TextFormatter.format("hello   world"))
+    }
+
+    @Test
+    fun `format collapses tabs`() {
+        assertEquals("hello world ", TextFormatter.format("hello\t\tworld"))
+    }
+
+    @Test
+    fun `format trims leading and trailing whitespace`() {
+        assertEquals("hello ", TextFormatter.format("  hello  "))
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //  Inter-sentence spacing
+    // ════════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `format adds space after sentence punctuation when missing`() {
+        assertEquals("hello. world ", TextFormatter.format("hello.world"))
+    }
+
+    @Test
+    fun `format preserves existing space after punctuation`() {
+        assertEquals("hello. world ", TextFormatter.format("hello. world"))
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //  Multi-sentence
+    // ════════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `format handles multi-sentence text`() {
+        assertEquals(
+            "the weather is nice. i will go outside ",
+            TextFormatter.format("the weather is nice. i will go outside"),
+        )
+    }
+
+    @Test
+    fun `format handles mixed punctuation sentence chain`() {
+        assertEquals(
+            "is it? yes! definitely ",
+            TextFormatter.format("is it? yes! definitely"),
+        )
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    //  Edge cases
+    // ════════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `format returns empty for blank input`() {
         assertEquals("", TextFormatter.format(""))
     }
 
     @Test
-    fun `whitespace-only returns empty`() {
+    fun `format returns empty for whitespace-only input`() {
         assertEquals("", TextFormatter.format("   "))
     }
 
-    // -------------------------------------------------------------------------
-    // Multi-space collapse
-    // -------------------------------------------------------------------------
-
     @Test
-    fun `multiple spaces collapsed to single`() {
-        assertEquals("Hello world. ", TextFormatter.format("hello  world"))
+    fun `format handles single character`() {
+        assertEquals("a ", TextFormatter.format("a"))
     }
 
     @Test
-    fun `three spaces collapsed`() {
-        assertEquals("A b c. ", TextFormatter.format("a   b   c"))
-    }
-
-    // -------------------------------------------------------------------------
-    // Trim
-    // -------------------------------------------------------------------------
-
-    @Test
-    fun `leading and trailing whitespace trimmed`() {
-        assertEquals("Hello. ", TextFormatter.format("  hello  "))
-    }
-
-    // -------------------------------------------------------------------------
-    // Sentence case capitalization
-    // -------------------------------------------------------------------------
-
-    @Test
-    fun `first letter capitalized`() {
-        assertEquals("Hello. ", TextFormatter.format("hello"))
-    }
-
-    @Test
-    fun `letter after period capitalized`() {
-        assertEquals("One. Two. ", TextFormatter.format("one. two"))
-    }
-
-    @Test
-    fun `space inserted after period when missing`() {
-        assertEquals("One. Two. ", TextFormatter.format("one.two"))
-    }
-
-    @Test
-    fun `letter after exclamation capitalized`() {
-        assertEquals("Wow! Great. ", TextFormatter.format("wow! great"))
-    }
-
-    @Test
-    fun `letter after question mark capitalized`() {
-        assertEquals("Why? Because. ", TextFormatter.format("why? because"))
-    }
-
-    @Test
-    fun `letter after newline capitalized`() {
-        assertEquals("Line one.\nLine two. ", TextFormatter.format("line one.\nline two"))
-    }
-
-    @Test
-    fun `already capitalized stays unchanged`() {
-        assertEquals("Hello World. ", TextFormatter.format("Hello World"))
-    }
-
-    // -------------------------------------------------------------------------
-    // Pronoun I fix
-    // -------------------------------------------------------------------------
-
-    @Test
-    fun `lowercase i after space becomes I`() {
-        assertEquals("Then I went. ", TextFormatter.format("then i went"))
-    }
-
-    @Test
-    fun `lowercase i at start becomes I`() {
-        assertEquals("I think so. ", TextFormatter.format("i think so"))
-    }
-
-    @Test
-    fun `i inside word is not capitalized`() {
-        assertEquals("This is nice. ", TextFormatter.format("this is nice"))
-    }
-
-    @Test
-    fun `i before comma becomes I`() {
-        assertEquals("I, too, agree. ", TextFormatter.format("i, too, agree"))
-    }
-
-    // -------------------------------------------------------------------------
-    // Trailing punctuation enforcement
-    // -------------------------------------------------------------------------
-
-    @Test
-    fun `period appended if none`() {
-        assertEquals("Hello. ", TextFormatter.format("hello"))
-    }
-
-    @Test
-    fun `existing period not duplicated`() {
-        assertEquals("Hello. ", TextFormatter.format("hello."))
-    }
-
-    @Test
-    fun `existing exclamation not duplicated`() {
-        assertEquals("Wow! ", TextFormatter.format("wow!"))
-    }
-
-    @Test
-    fun `existing question mark not duplicated`() {
-        assertEquals("Really? ", TextFormatter.format("really?"))
-    }
-
-    @Test
-    fun `existing ellipsis not duplicated`() {
-        assertEquals("Hmm\u2026 ", TextFormatter.format("hmm\u2026"))
-    }
-
-    // -------------------------------------------------------------------------
-    // Full pipeline integration
-    // -------------------------------------------------------------------------
-
-    @Test
-    fun `full pipeline with all steps`() {
-        val input = "  so  i  went  there  "
-        val result = TextFormatter.format(input)
-        assertEquals("So I went there. ", result)
-    }
-
-    @Test
-    fun `multi-sentence formatting`() {
-        val input = "one. two. three"
-        val result = TextFormatter.format(input)
-        assertEquals("One. Two. Three. ", result)
-    }
-
-    @Test
-    fun `space inserted after question and exclamation when missing`() {
-        val input = "what?yes!ok"
-        val result = TextFormatter.format(input)
-        assertEquals("What? Yes! Ok. ", result)
+    fun `format handles already properly formatted text`() {
+        assertEquals("Hello world. ", TextFormatter.format("Hello world."))
     }
 }

@@ -24,7 +24,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -85,25 +85,27 @@ fun Modifier.glowEffect(
     glowColor: Color,
     glowRadius: Dp = 18.dp,
     cornerRadius: Dp = 20.dp,
-): Modifier = drawBehind {
-    drawIntoCanvas { canvas ->
-        val paint = Paint()
-        val frameworkPaint = paint.asFrameworkPaint()
-        frameworkPaint.isAntiAlias = true
-        frameworkPaint.maskFilter = android.graphics.BlurMaskFilter(
-            glowRadius.toPx(),
-            android.graphics.BlurMaskFilter.Blur.NORMAL,
-        )
-        paint.color = glowColor
-        canvas.drawRoundRect(
-            left = 0f,
-            top = 0f,
-            right = size.width,
-            bottom = size.height,
-            radiusX = cornerRadius.toPx(),
-            radiusY = cornerRadius.toPx(),
-            paint = paint,
-        )
+): Modifier = drawWithCache {
+    val paint = Paint()
+    val frameworkPaint = paint.asFrameworkPaint()
+    frameworkPaint.isAntiAlias = true
+    frameworkPaint.maskFilter = android.graphics.BlurMaskFilter(
+        glowRadius.toPx(),
+        android.graphics.BlurMaskFilter.Blur.NORMAL,
+    )
+    paint.color = glowColor
+    onDrawBehind {
+        drawIntoCanvas { canvas ->
+            canvas.drawRoundRect(
+                left = 0f,
+                top = 0f,
+                right = size.width,
+                bottom = size.height,
+                radiusX = cornerRadius.toPx(),
+                radiusY = cornerRadius.toPx(),
+                paint = paint,
+            )
+        }
     }
 }
 
@@ -194,8 +196,8 @@ fun GlassStepBadge(
     val shape = RoundedCornerShape(50)
     Box(
         modifier = modifier
-            .size(36.dp)
-            .glowEffect(glowColor = accent.copy(alpha = 0.40f), glowRadius = 12.dp, cornerRadius = 18.dp)
+            .size(48.dp)
+            .glowEffect(glowColor = accent.copy(alpha = 0.40f), glowRadius = 12.dp, cornerRadius = 24.dp)
             .clip(shape)
             .background(accent.copy(alpha = 0.15f))
             .border(1.5.dp, accent.copy(alpha = 0.75f), shape),
@@ -236,43 +238,6 @@ fun GlassDivider(modifier: Modifier = Modifier) {
                 ),
             ),
     )
-}
-
-// ---------------------------------------------------------------------------
-// GlassSectionHeader — cobalt section label with accent underline
-// ---------------------------------------------------------------------------
-
-/**
- * Section header with a cobalt-highlight title and a short glowing underline bar.
- * Use in place of the plain [Text] section labels in settings and similar screens.
- */
-@Composable
-fun GlassSectionHeader(title: String, modifier: Modifier = Modifier) {
-    Column(modifier = modifier.padding(vertical = 8.dp)) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Bold,
-            color = CobaltGlow,
-        )
-        Spacer(Modifier.height(3.dp))
-        Box(
-            modifier = Modifier
-                .width(28.dp)
-                .height(2.dp)
-                .glowEffect(
-                    glowColor = CobaltBright.copy(alpha = 0.55f),
-                    glowRadius = 5.dp,
-                    cornerRadius = 1.dp,
-                )
-                .clip(RoundedCornerShape(1.dp))
-                .background(
-                    Brush.horizontalGradient(
-                        colors = listOf(CobaltBright, CobaltGlow.copy(alpha = 0.4f)),
-                    ),
-                ),
-        )
-    }
 }
 
 // ---------------------------------------------------------------------------

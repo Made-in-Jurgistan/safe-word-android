@@ -1,24 +1,24 @@
 ﻿package com.safeword.android
 
-import android.Manifest
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.net.toUri
 import androidx.compose.runtime.getValue
-import androidx.core.content.ContextCompat
+import androidx.compose.runtime.produceState
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 
+import com.safeword.android.data.settings.OnboardingRepository
 import com.safeword.android.data.settings.SettingsRepository
 import com.safeword.android.service.FloatingOverlayService
-import com.safeword.android.ui.SafeWordAndroidApp
+import com.safeword.android.ui.navigation.SafeWordNavGraph
+import com.safeword.android.ui.navigation.NavigationRoutes
 import com.safeword.android.ui.theme.SafeWordTheme
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -35,13 +35,10 @@ import javax.inject.Inject
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
+    // Hilt requires field injection for @AndroidEntryPoint Activity subclasses
+    // (framework constraint). Constructor injection is not supported for Activities.
     @Inject lateinit var settingsRepository: SettingsRepository
-
-    private val notificationPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission(),
-    ) { granted ->
-        Timber.i("[PERMISSION] POST_NOTIFICATIONS | granted=%b", granted)
-    }
+    @Inject lateinit var onboardingRepository: OnboardingRepository
 
     private val overlayPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -61,13 +58,15 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         Timber.i("[LIFECYCLE] MainActivity.onCreate | savedState=%b", savedInstanceState != null)
         enableEdgeToEdge()
-        requestNotificationPermissionIfNeeded()
         observeOverlaySetting()
         setContent {
-            // SafeWordTheme always applies the fixed dark-glass colour scheme.
-            // Dark-mode setting is consumed via SettingsRepository.
+            // Resolve the correct start destination asynchronously; show splash in the meantime.
+            val startDestination by produceState(NavigationRoutes.SPLASH) {
+                val onboardingComplete = onboardingRepository.onboardingComplete.first()
+                value = if (onboardingComplete) NavigationRoutes.SETTINGS else NavigationRoutes.SPLASH
+            }
             SafeWordTheme {
-                SafeWordAndroidApp()
+                SafeWordNavGraph(startDestination = startDestination)
             }
         }
     }
@@ -113,7 +112,7 @@ class MainActivity : ComponentActivity() {
                             overlayPermissionLauncher.launch(
                                 Intent(
                                     Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                    Uri.parse("package:$packageName"),
+                                    "package:$packageName".toUri(),
                                 ),
                             )
                         } else {
@@ -124,11 +123,4 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun requestNotificationPermissionIfNeeded() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-        }
-    }
 }

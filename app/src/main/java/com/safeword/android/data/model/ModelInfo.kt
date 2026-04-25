@@ -1,7 +1,7 @@
 ﻿package com.safeword.android.data.model
 
 /**
- * Whisper model metadata.
+ * STT model metadata.
  * Describes available models that can be downloaded and used for on-device transcription.
  */
 data class ModelInfo(
@@ -13,98 +13,72 @@ data class ModelInfo(
     val language: String = "multilingual",
     val isQuantized: Boolean = false,
     val sha256: String? = null,
-    val modelType: ModelType = ModelType.WHISPER,
+
+    /**
+     * For multi-file models (e.g. Moonshine ONNX), maps each required filename
+     * to its download URL. When non-empty, [downloadUrl] is ignored and files
+     * are downloaded into a subdirectory named after the model ID.
+     */
+    val downloadFiles: Map<String, String> = emptyMap(),
+
+    /**
+     * Per-file SHA-256 checksums for multi-file models. Maps the same filename
+     * keys used in [downloadFiles] to their expected lowercase hex digest.
+     * When a file's hash is present, [downloadMultiFileModel] verifies the
+     * downloaded file before accepting it. Entries may be omitted to skip
+     * verification for that file.
+     */
+    val downloadFileHashes: Map<String, String> = emptyMap(),
 ) {
     /** Human-readable file size. */
     val sizeLabel: String
         get() {
             val mb = sizeBytes / (1024.0 * 1024.0)
-            return if (mb >= 1024) {
-                String.format(java.util.Locale.ROOT, "%.1f GB", mb / 1024.0)
-            } else {
-                String.format(java.util.Locale.ROOT, "%.0f MB", mb)
-            }
+            return if (mb >= 1024) "%.1f GB".format(mb / 1024.0)
+            else "%.0f MB".format(mb)
         }
 
     companion object {
-        private const val HF_WHISPER_BASE = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
-        private const val HF_VAD_BASE = "https://huggingface.co/ggml-org/whisper-vad/resolve/main"
-        private const val HF_MOONSHINE_BASE = "https://huggingface.co/UsefulSensors/moonshine/resolve/main/onnx"
-        /** Hardcoded model ID for the sole Whisper model. */
-        const val WHISPER_MODEL_ID = "small.en-q8_0"
-        /** Hardcoded model ID for the GGML Silero VAD model used by whisper.cpp native VAD. */
-        const val VAD_MODEL_ID = "silero-v6.2.0"
-        /** distil-whisper small.en Q8 model ID — 2× faster decoder, ~50% smaller than full small. */
-        const val DISTIL_WHISPER_MODEL_ID = "distil-small.en-q8_0"
-        /** Moonshine Tiny model ID (fastest, English-only). */
-        const val MOONSHINE_TINY_MODEL_ID = "moonshine-tiny"
-        /** Moonshine Base model ID (higher accuracy, English-only). */
-        const val MOONSHINE_BASE_MODEL_ID = "moonshine-base"
+        private const val MOONSHINE_STREAMING_CDN = "https://download.moonshine.ai/model/small-streaming-en/quantized"
 
-        /** All models shipped with Safe Word. */
+        const val MOONSHINE_SMALL_STREAMING_MODEL_ID = "moonshine-small-streaming"
+        // Architecture value 4 = MoonshineModelArchitecture.SMALL_STREAMING per Moonshine Voice SDK.
+        const val MOONSHINE_MODEL_ARCH_SMALL_STREAMING = 4
+
         val AVAILABLE_MODELS = listOf(
             ModelInfo(
-                id = WHISPER_MODEL_ID,
-                name = "Small English Q8",
-                sizeBytes = 264_241_152,
-                description = "Whisper small.en — 8-bit quantized, 25% smaller, faster on ARM NEON.",
-                downloadUrl = "$HF_WHISPER_BASE/ggml-small.en-q8_0.bin",
+                id = MOONSHINE_SMALL_STREAMING_MODEL_ID,
+                name = "Moonshine Small Streaming v2",
+                sizeBytes = 246_070_310,
+                description = "Moonshine Small Streaming v2 — real-time streaming, English-only, 123M params, 7.84% WER.",
+                downloadUrl = "", // Multi-file: uses downloadFiles instead
                 language = "en",
                 isQuantized = true,
-                sha256 = "67a179f608ea6114bd3fdb9060e762b588a3fb3bd00c4387971be4d177958067",
-                modelType = ModelType.WHISPER,
-            ),
-            ModelInfo(
-                id = DISTIL_WHISPER_MODEL_ID,
-                name = "Small English Fast (Distilled)",
-                sizeBytes = 130_000_000,
-                description = "distil-whisper small.en — 2× faster decoder, ~50% smaller, <1% WER difference on clean speech.",
-                downloadUrl = "$HF_WHISPER_BASE/ggml-distil-small.en-q8_0.bin",
-                language = "en",
-                isQuantized = true,
-                modelType = ModelType.WHISPER,
-            ),
-            ModelInfo(
-                id = VAD_MODEL_ID,
-                name = "Silero VAD v6.2.0",
-                sizeBytes = 885_000,
-                description = "GGML Silero VAD model for whisper.cpp native voice activity detection.",
-                downloadUrl = "$HF_VAD_BASE/ggml-silero-v6.2.0.bin",
-                language = "multilingual",
-                isQuantized = false,
-                modelType = ModelType.SILERO_VAD,
-            ),
-            ModelInfo(
-                id = MOONSHINE_TINY_MODEL_ID,
-                name = "Moonshine Tiny",
-                sizeBytes = 27_000_000,
-                description = "Moonshine Tiny — English-only, 27 MB, ~5× faster than real-time on ARM.",
-                downloadUrl = "$HF_MOONSHINE_BASE/tiny/preprocess.onnx",
-                language = "en",
-                isQuantized = false,
-                modelType = ModelType.MOONSHINE,
-            ),
-            ModelInfo(
-                id = MOONSHINE_BASE_MODEL_ID,
-                name = "Moonshine Base",
-                sizeBytes = 60_000_000,
-                description = "Moonshine Base — English-only, 60 MB, higher accuracy than Tiny.",
-                downloadUrl = "$HF_MOONSHINE_BASE/base/preprocess.onnx",
-                language = "en",
-                isQuantized = false,
-                modelType = ModelType.MOONSHINE,
+                downloadFiles = mapOf(
+                    "adapter.ort" to "$MOONSHINE_STREAMING_CDN/adapter.ort",
+                    "cross_kv.ort" to "$MOONSHINE_STREAMING_CDN/cross_kv.ort",
+                    "decoder_kv.ort" to "$MOONSHINE_STREAMING_CDN/decoder_kv.ort",
+                    "encoder.ort" to "$MOONSHINE_STREAMING_CDN/encoder.ort",
+                    "frontend.ort" to "$MOONSHINE_STREAMING_CDN/frontend.ort",
+                    "streaming_config.json" to "$MOONSHINE_STREAMING_CDN/streaming_config.json",
+                    "tokenizer.bin" to "$MOONSHINE_STREAMING_CDN/tokenizer.bin",
+                    "decoder_kv_with_attention.ort" to "$MOONSHINE_STREAMING_CDN/decoder_kv_with_attention.ort",
+                ),
+                downloadFileHashes = mapOf(
+                    "adapter.ort" to "d8493e0ac76a198b309a8be6f74b3101e235f773ffe5d6b378278cd7e4177992",
+                    "cross_kv.ort" to "6e57d1361717e00d73336a0c3beafedae784b1e537905ad253dee33db4007466",
+                    "decoder_kv.ort" to "d5adfcfaa6e582144791f1568bd0f683852c7bfbb8c79acad97499da05e4ffcf",
+                    "encoder.ort" to "3b21d02eff6aa5651524ada4271d37c1d7bba4eb3d256415074f2cfdbaeb526a",
+                    "frontend.ort" to "e086451043c1c8652a9614e4a4a81d5807221b611584a3cf31f73779d5900003",
+                    "streaming_config.json" to "26f02b6afb22d60871a5efd85c3d38e569cc0ddb6c5eb6e93d3260152ae8a47a",
+                    "tokenizer.bin" to "6884b35fd6377d4c4d32336a0bc152f36b64d1e45b6503683cdc238250a8472d",
+                    "decoder_kv_with_attention.ort" to "2ac12d0b1ab1459ae2572b0d8f0a359a79ac83ad0a5de0b40bdb33c9357048ee",
+                ),
             ),
         )
 
         fun findById(id: String): ModelInfo? = AVAILABLE_MODELS.find { it.id == id }
     }
-}
-
-/** Type discriminator for model files. */
-enum class ModelType {
-    WHISPER,
-    SILERO_VAD,
-    MOONSHINE,
 }
 
 /**

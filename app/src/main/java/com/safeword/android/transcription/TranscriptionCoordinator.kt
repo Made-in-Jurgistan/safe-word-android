@@ -1,137 +1,177 @@
-﻿package com.safeword.android.transcription
+﻿
+package com.safeword.android.transcription
 
 import android.content.ClipData
+import android.content.ClipDescription
 import android.content.ClipboardManager
 import android.content.Context
-import android.content.Intent
+import android.os.PersistableBundle
+import android.os.PowerManager
+import com.safeword.android.audio.AdaptiveVadSensitivity
 import com.safeword.android.audio.AudioRecorder
-import com.safeword.android.audio.SileroVadDetector
-import com.safeword.android.data.db.TranscriptionDao
-import com.safeword.android.data.db.TranscriptionEntity
-import com.safeword.android.data.model.ModelInfo
-import com.safeword.android.data.model.ModelRepository
-import com.safeword.android.data.model.ModelType
-import com.safeword.android.data.settings.SettingsRepository
+import com.safeword.android.audio.SilenceAutoStopDetector
+import com.safeword.android.data.MicAccessEventRepository
+import com.safeword.android.data.db.MicAccessEventEntity
 import com.safeword.android.R
+import com.safeword.android.service.AccessibilityStateHolder
+import com.safeword.android.service.InputContextSnapshot
 import com.safeword.android.service.SafeWordAccessibilityService
-import com.safeword.android.service.RecordingService
-import com.safeword.android.service.ThermalMonitor
 import com.safeword.android.di.ApplicationScope
+import com.safeword.android.di.IoDispatcher
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.sample
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Singleton
 import timber.log.Timber
 
 /**
- * TranscriptionCoordinator — mirrors the desktop Safe Word TranscriptionCoordinator.
+ * Orchestrates the recording → inference → post-processing pipeline
+ * using Moonshine v2 streaming as the sole STT engine.
  *
- * Manages the state machine: Idle → Recording → Transcribing → Done → Idle
- * Coordinates between AudioRecorder, WhisperEngine, and output actions.
- * Wires user settings (language, threads, translate, auto-detect) through to whisper.
- * Performs post-transcription actions: clipboard copy, accessibility insert, DB save.
+ * Manages the state machine: Idle → Recording → Done → Idle.
+ * Model lifecycle (loading, path resolution) is delegated to [ModelManager].
+ * Text insertion is delegated to [AccessibilityStateHolder].
  */
 @Singleton
 class TranscriptionCoordinator @Inject constructor(
     private val audioRecorder: AudioRecorder,
-    private val whisperEngine: WhisperEngine,
-    private val settingsRepository: SettingsRepository,
-    private val transcriptionDao: TranscriptionDao,
-    private val vadDetector: SileroVadDetector,
+    private val modelManager: ModelManager,
+    private val accessibilityStateHolder: AccessibilityStateHolder,
+    private val micAccessEventRepository: MicAccessEventRepository,
+    private val correctionLearner: CorrectionLearner,
+    private val incrementalInserter: IncrementalTextInserter,
+    private val vocabularyObserver: VocabularyObserver,
+    private val silenceAutoStopDetector: SilenceAutoStopDetector,
+    private val voiceCommandDetector: VoiceCommandDetector,
+    private val performanceMonitor: PerformanceMonitor,
+    private val adaptiveVadSensitivity: AdaptiveVadSensitivity,
     @ApplicationContext private val context: Context,
-    private val modelRepository: ModelRepository,
-    private val thermalMonitor: ThermalMonitor,
     @ApplicationScope private val scope: CoroutineScope,
+    @IoDispatcher private val ioDispatcher: CoroutineDispatcher,
 ) {
-
-    private data class InputContext(
-        val packageName: String,
-        val hintText: String,
-        val className: String,
-    )
 
     companion object {
         /** Polling interval for recording duration updates (ms). */
         private const val DURATION_POLL_INTERVAL_MS = 200L
-        /** Minimum audio duration in seconds for Whisper to produce reliable output. */
-        private const val MIN_AUDIO_DURATION_SEC = 1.25
-        /** Cooldown between backend switches to avoid oscillation. */
-        private const val BACKEND_SWITCH_COOLDOWN_MS = 30_000L
-        /** Skip inference when VAD speech content is below this fraction of total audio. */
-        private const val NO_SPEECH_DENSITY_THRESHOLD = 0.05f
-        /** Consecutive slow-RTF transcriptions required before switching backend. */
-        private const val BACKEND_SWITCH_HYSTERESIS = 3
-        /** Maximum samples per transcription chunk (30 s at 16 kHz). Long audio is split to avoid Whisper encoder overflow. */
-        private const val CHUNK_SAMPLES = 30 * 16_000
+
+        /** How long Done / Error states linger before auto-resetting to Idle (5s to allow user to read error). */
+        private const val RESET_TO_IDLE_DELAY_MS = 5000L
+
+        /** Maximum single-session recording duration before auto-stop (5 min). */
+        const val MAX_RECORDING_DURATION_MS = 300_000L
+
+        /** Silence duration that triggers auto-stop when VAD is active (3.5 s). */
+        const val SILENCE_AUTO_STOP_MS = 3_500L
+
+        // ── VAD-gated audio feed constants ────────────────────────────────
+        /**
+         * Fallback minimum speech probability for a chunk to pass directly to the STT engine.
+         * The actual threshold used is [AdaptiveVadSensitivity.speechThreshold] * 0.8f for dynamic
+         * adaptation to ambient noise levels. This constant serves as a floor only.
+         */
+        private const val FEED_SPEECH_THRESHOLD_FALLBACK = 0.10f
+        /** Pre-roll ring buffer depth (frames). 10 × 30 ms = 300 ms captured before speech onset. */
+        private const val FEED_PRE_ROLL_FRAMES = 10
+        /** Post-roll depth (frames). 33 × 30 ms ≈ 1 s fed after the last speech frame. */
+        private const val FEED_POST_ROLL_FRAMES = 33
     }
 
-    private var recordingJob: Job? = null
-    private var durationJob: Job? = null
-    private var preloadJob: Job? = null
-    private var resetJob: Job? = null
-    private var recordingStartTime: Long = 0
-    private var lastBackendSwitchMs: Long = 0
-    /** Consecutive slow-RTF observations before switching backend. */
-    private var consecutiveSlowRtfCount: Int = 0
+    /**
+     * Prevents concurrent [stopStreamingRecording] calls from rapid stop-button taps.
+     *
+     * Concurrency contract:
+     * - [stopRecording] launches a fire-and-forget coroutine on [scope] that acquires
+     *   [stopMutex] before calling [stopStreamingRecording]. The outer state check is
+     *   intentionally outside the mutex (fast path); the inner guard re-checks under
+     *   the lock to close the TOCTOU window between the state check and the lock.
+     * - [cancel] does not use [stopMutex]; it performs an immediate synchronous reset
+     *   and nulls the event listener before posting the cleanup job, so that any
+     *   in-flight [onLineCompleted] callbacks after cancellation are silently dropped.
+     */
+    private val stopMutex = Mutex()
 
-    /** Reusable padding buffer for short audio clips (avoids ~78 KB alloc per transcription). */
-    private var paddingBuffer: FloatArray? = null
+    /** Active recording session job — cancelling this cancels all child jobs atomically. */
+    @Volatile private var sessionJob: Job? = null
+    @Volatile private var resetJob: Job? = null
+    @Volatile private var recordingStartTime: Long = 0
+
+    /** Job that fires 12 s after dictation ends to capture text-field corrections for learning. */
+    @Volatile private var idleSnapshotJob: Job? = null
+
+    /**
+     * Serialised dispatcher for incremental-insert coroutines — single-threaded FIFO ordering
+     * ensures ordered insertion across consecutive [onLineCompleted] callbacks.
+     */
+    private val serialInsertDispatcher = Dispatchers.Default.limitedParallelism(1)
+
+    /**
+     * Most-recent incremental-insert job. Joined in [stopStreamingRecording] to ensure
+     * the final in-flight insert completes before the buffer is consumed.
+     */
+    @Volatile private var lastInsertJob: Job? = null
+
+    /**
+     * In-flight stopStream() job from [cancel]. Joined at the start of the next
+     * [startStreamingRecording] to ensure the engine is fully stopped before reuse.
+     */
+    @Volatile private var cleanupJob: Job? = null
+
+    /** Row id of the current mic access event — used to mark stopped. */
+    @Volatile private var currentMicEventId: Long = 0
+
+    // ---------------------------------------------------------------------------
+    // Per-session performance metrics (reset in startRecording via resetForSession)
+    // ---------------------------------------------------------------------------
+    private val sessionCommandsDetected = AtomicInteger(0)
+    private val sessionLinesInserted = AtomicInteger(0)
+    private val sessionConfidenceSum = AtomicLong(0L)  // confidence * 1000 for integer math
+    private val sessionConfidenceCount = AtomicInteger(0)
+    private val partialUpdateEpoch = AtomicLong(0L)
 
     private val _state = MutableStateFlow<TranscriptionState>(TranscriptionState.Idle)
     val state: StateFlow<TranscriptionState> = _state.asStateFlow()
 
-    /** All completed transcriptions this session. */
-    private val _history = MutableStateFlow<List<TranscriptionResult>>(emptyList())
-    val history: StateFlow<List<TranscriptionResult>> = _history.asStateFlow()
-
     /**
-     * Eagerly load VAD + Whisper before the user presses the mic button.
-     *
-     * Idempotent: no-ops if models are already loaded or a preload is already in progress.
-     * Called from FloatingOverlayService.onCreate() so models are pre-loaded
-     * before the first mic press — eliminating the 2-second model-loading head-cut.
+     * Eagerly load VAD + STT engine before the user presses the mic button.
+     * Delegates to [ModelManager.preloadModels].
      */
     fun preloadModels() {
-        if (preloadJob?.isActive == true) {
-            Timber.d("[INIT] TranscriptionCoordinator.preloadModels | preload already in progress, skipping")
-            return
-        }
-        preloadJob = scope.launch(Dispatchers.IO) {
-            Timber.i("[INIT] TranscriptionCoordinator.preloadModels | background preload starting")
-            if (!vadDetector.isLoaded) {
-                Timber.d("[INIT] TranscriptionCoordinator.preloadModels | loading VAD")
-                vadDetector.load()
-            }
-            if (!whisperEngine.isReady()) {
-                val path = resolveModelPath() ?: run {
-                    Timber.w("[INIT] TranscriptionCoordinator.preloadModels | no downloaded model — skipping")
-                    return@launch
-                }
-                // CPU with ARM NEON is faster than Vulkan on mobile for
-                // autoregressive decoder models like Whisper — Vulkan kernel-launch
-                // overhead per decoder step dominates on mobile GPUs.
-                val useGpu = false
-                Timber.i("[INIT] TranscriptionCoordinator.preloadModels | loading Whisper model (CPU+NEON)")
-                val loaded = whisperEngine.loadModel(path, useGpu = useGpu)
-                if (loaded) {
-                    Timber.i("[INIT] TranscriptionCoordinator.preloadModels | model loaded — running prewarm for CPU cache/graph warmup")
-                    whisperEngine.prewarm()
-                }
-            }
+        modelManager.preloadModels()
+    }
 
-            Timber.i("[INIT] TranscriptionCoordinator.preloadModels | preload complete")
-        }
+    /**
+     * Cancel a running background model preload. Safe to call redundantly.
+     * Delegates to [ModelManager.cancelPreload].
+     */
+    fun cancelPreload() {
+        modelManager.cancelPreload()
+    }
+
+    /**
+     * Prewarm the personal vocabulary cache with the most-used entries.
+     * Call alongside [preloadModels] during service startup.
+     */
+    fun preloadVocabulary() {
+        vocabularyObserver.preloadVocabulary()
     }
 
     /**
@@ -141,152 +181,117 @@ class TranscriptionCoordinator @Inject constructor(
         val currentState = _state.value
         if (currentState !is TranscriptionState.Idle &&
             currentState !is TranscriptionState.Done &&
-            currentState !is TranscriptionState.Error &&
-            currentState !is TranscriptionState.CommandDetected
+            currentState !is TranscriptionState.Error
         ) {
             Timber.w("[STATE] startRecording | blocked from state=%s", currentState)
             return
         }
 
         Timber.i("[ENTER] TranscriptionCoordinator.startRecording | currentState=%s", currentState)
+        idleSnapshotJob?.cancel()
+        idleSnapshotJob = null
         resetJob?.cancel()
         resetJob = null
-        _state.value = TranscriptionState.Recording()
+        // Reset per-session metrics
+        sessionCommandsDetected.set(0)
+        sessionLinesInserted.set(0)
+        sessionConfidenceSum.set(0L)
+        sessionConfidenceCount.set(0)
+        performanceMonitor.resetAll()
         recordingStartTime = System.currentTimeMillis()
 
-        // Start foreground service for background mic access
-        try {
-            val serviceIntent = Intent(context, RecordingService::class.java)
-            context.startForegroundService(serviceIntent)
-            Timber.d("[SERVICE] startRecording | RecordingService started")
-        } catch (e: Exception) {
-            Timber.w(e, "[SERVICE] startRecording | could not start RecordingService")
-        }
+        // Eagerly warm the SymSpell dictionary while the user speaks.
+        incrementalInserter.warmSymSpell()
 
-        // Track recording duration
-        durationJob = scope.launch {
-            val maxMs = settingsRepository.settings.first().maxRecordingDurationSec * 1000L
-            while (true) {
-                delay(DURATION_POLL_INTERVAL_MS)
-                val current = _state.value
-                if (current is TranscriptionState.Recording) {
+        sessionJob = scope.launch {
+            // C2: All pre-flight checks run BEFORE transitioning to Recording state so
+            //     the UI never flashes Recording→Error on a failing startup.
+
+            // VAD is always on — load Silero if not already loaded.
+            val useVad = run {
+                val loaded = modelManager.ensureVadLoaded()
+                if (!loaded) {
+                    Timber.w("[WARN] TranscriptionCoordinator.startRecording | Silero VAD failed to load, continuing without VAD")
+                }
+                loaded
+            }
+
+            // Gate on thermal status — refuse to start if device is SEVERE+.
+            if (modelManager.isTooHotForTranscription()) {
+                Timber.w("[THERMAL] TranscriptionCoordinator.startRecording | device too hot, refusing to start")
+                _state.value = TranscriptionState.Error(context.getString(R.string.error_device_too_hot))
+                scheduleResetToIdle()
+                return@launch
+            }
+
+            // Detect battery saver — log warning so support traces can explain latency spikes.
+            val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (powerManager.isPowerSaveMode) {
+                Timber.w("[POWER] startRecording | Battery saver active — expect degraded STT latency")
+            }
+
+            // Auto-load the Moonshine streaming engine if not yet ready.
+            Timber.i("[STATE] TranscriptionCoordinator.startRecording | sttEngine=moonshine_v2")
+            if (!modelManager.ensureEngineLoaded()) {
+                Timber.e("[ERROR] TranscriptionCoordinator.startRecording | failed to ensure Moonshine streaming engine loaded")
+                _state.value = TranscriptionState.Error(context.getString(R.string.error_no_model_downloaded))
+                scheduleResetToIdle()
+                return@launch
+            }
+
+            // C1: Commit the mic access row under NonCancellable so recordStop() always
+            //     has a valid event ID, even if the session is cancelled immediately after.
+            currentMicEventId = withContext(NonCancellable + ioDispatcher) {
+                micAccessEventRepository.recordStart(
+                    purpose = MicAccessEventEntity.PURPOSE_TRANSCRIPTION,
+                    startedAt = recordingStartTime,
+                )
+            }
+
+            // All checks passed and DB row committed — transition to Recording state.
+            _state.value = TranscriptionState.Recording()
+
+            val durationJob = launch {
+                val maxMs = MAX_RECORDING_DURATION_MS
+                while (true) {
+                    delay(DURATION_POLL_INTERVAL_MS)
                     val elapsed = System.currentTimeMillis() - recordingStartTime
-                    _state.value = current.copy(durationMs = elapsed)
-
-                    // Auto-stop at max duration
-                    if (elapsed >= maxMs) {
-                        Timber.i("[RECORDING] durationJob | max duration reached maxMs=%d elapsedMs=%d", maxMs, elapsed)
-                        stopRecording()
+                    _state.update { current ->
+                        if (current is TranscriptionState.Recording) current.copy(durationMs = elapsed) else current
+                    }
+                    val current = _state.value
+                    if (current is TranscriptionState.Recording) {
+                        // Auto-stop at max duration
+                        if (elapsed >= maxMs) {
+                            Timber.i("[RECORDING] durationJob | max duration reached maxMs=%d elapsedMs=%d", maxMs, elapsed)
+                            stopRecording()
+                            break
+                        }
+                    } else {
                         break
                     }
-                } else {
-                    break
                 }
             }
-        }
 
-        recordingJob = scope.launch {
             try {
-                val settings = settingsRepository.settings.first()
-                val useVad = if (settings.vadEnabled) {
-                    if (!vadDetector.isLoaded) {
-                        withContext(Dispatchers.IO) { vadDetector.load() }
-                    } else {
-                        true
-                    }
-                } else {
-                    false
-                }
-
-                // Auto-load the single downloaded model if Whisper engine is not yet ready.
-                // loadModel() is idempotent when the same model is already loaded.
-                if (!whisperEngine.isReady()) {
-                    withContext(Dispatchers.IO) {
-                        val path = resolveModelPath()
-                        if (path != null) {
-                            val useGpu = !thermalMonitor.isThrottled
-                            Timber.i("[MODEL] startRecording | auto-loading model")
-                            whisperEngine.loadModel(path, useGpu = useGpu)
-                        } else {
-                            Timber.e("[MODEL] startRecording | no downloaded model — cannot transcribe")
-                        }
-                    }
-                    if (!whisperEngine.isReady()) {
-                        _state.value = TranscriptionState.Error(context.getString(R.string.error_no_model_downloaded))
-                        scheduleResetToIdle()
-                        stopForegroundService()
-                        return@launch
-                    }
-                }
-
-                // Wire VAD into recorder for real-time speech probability
-                audioRecorder.vadDetector = if (useVad) vadDetector else null
-
-                // Launch amplitude monitoring
-                launch {
-                    audioRecorder.amplitudeDb.collect { db ->
-                        val current = _state.value
-                        if (current is TranscriptionState.Recording) {
-                            _state.value = current.copy(amplitudeDb = db)
-                        }
-                    }
-                }
-
-                // Launch speech probability monitoring
-                launch {
-                    audioRecorder.speechProbability.collect { prob ->
-                        val current = _state.value
-                        if (current is TranscriptionState.Recording) {
-                            _state.value = current.copy(speechProbability = prob)
-                        }
-                    }
-                }
-
-                // Auto-stop after sustained silence (only when VAD is active)
-                val silenceTimeoutMs = settings.autoStopSilenceMs.toLong()
-                if (useVad && silenceTimeoutMs > 0) {
-                    launch {
-                        var speechDetected = false
-                        var silenceStartMs = 0L
-                        audioRecorder.speechProbability.collect { prob ->
-                            if (_state.value !is TranscriptionState.Recording) return@collect
-                            if (prob >= settings.vadThreshold) {
-                                speechDetected = true
-                                silenceStartMs = 0L
-                            } else if (speechDetected) {
-                                val now = System.currentTimeMillis()
-                                if (silenceStartMs == 0L) {
-                                    silenceStartMs = now
-                                } else if (now - silenceStartMs >= silenceTimeoutMs) {
-                                    Timber.i("[RECORDING] auto-stop on silence | silenceMs=%d threshold=%d",
-                                        now - silenceStartMs, silenceTimeoutMs)
-                                    stopRecording()
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Start recording — this suspends until cancelled
-                audioRecorder.record()
+                Timber.i("[ENTER] TranscriptionCoordinator.startStreamingRecording | sttEngine=moonshine_v2 architecture=streaming-native useVad=%b", useVad)
+                startStreamingRecording(useVad)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Timber.e(e, "[RECORDING] recordingJob | recording error")
                 _state.value = TranscriptionState.Error(
                     message = e.message ?: context.getString(R.string.error_recording_failed),
-                    previousState = TranscriptionState.Recording(),
                 )
                 scheduleResetToIdle()
-                stopForegroundService()
+            } finally {
+                durationJob.cancel()
             }
         }
     }
 
     /**
-     * Stop recording and begin transcription. Transitions: Recording → Transcribing → Done.
-     *
-     * Gets all recorded samples and runs the full transcription pipeline.
+     * Stop recording and finalize transcription. Transitions: Recording → Done.
      */
     fun stopRecording() {
         val currentState = _state.value
@@ -297,151 +302,455 @@ class TranscriptionCoordinator @Inject constructor(
 
         Timber.i("[ENTER] TranscriptionCoordinator.stopRecording | elapsedMs=%d",
             System.currentTimeMillis() - recordingStartTime)
-        durationJob?.cancel()
-        durationJob = null
+
+        // Privacy audit — record mic access end
+        val stopTime = System.currentTimeMillis()
+        val eventId = currentMicEventId
+        if (eventId > 0) {
+            scope.launch(ioDispatcher) {
+                micAccessEventRepository.recordStop(eventId, stopTime, stopTime - recordingStartTime)
+            }
+        }
 
         // Stop the AudioRecorder first so any pending read() unblocks
         audioRecorder.stop()
-        // Cancel the recording coroutine so its while(isActive) loop exits
-        recordingJob?.cancel()
-        // Cancel preload if still running (model loading on IO).
-        preloadJob?.cancel()
+        // Null out the event listener immediately so stale onLineCompleted
+        // callbacks cannot queue work on serialInsertDispatcher during teardown.
+        modelManager.streamingEngine.setEventListener(null)
+        // Clear the buffer recycler so the engine holds no reference to AudioRecorder.
+        modelManager.streamingEngine.setBufferRecycler(null)
+        // Cancel the session coroutine so its child jobs exit
+        val previousSession = sessionJob
+        sessionJob = null
+        previousSession?.cancel()
 
+        // fire-and-forget: outlives coordinator via @ApplicationScope
         scope.launch {
-            try {
-                // Wait for recording coroutine to finish cleanup (finally block)
-                recordingJob?.join()
-                recordingJob = null
+            stopMutex.withLock {
+                // Re-check state under the lock to close the TOCTOU window between
+                // the outer guard and the mutex acquisition.
+                if (_state.value !is TranscriptionState.Recording) return@withLock
+                try {
+                    // Wait briefly for session coroutine cleanup (finally block);
+                    // proceed after 500 ms even if it hasn't finished — the finally
+                    // block is bookkeeping that does not affect streaming engine state.
+                    withTimeoutOrNull(500) { previousSession?.join() }
 
-                batchTranscribeFallback()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Timber.e(e, "[TRANSCRIPTION] stopRecording | error after stopping recording")
-                _state.value = TranscriptionState.Error(e.message ?: context.getString(R.string.error_transcription_failed))
+                    stopStreamingRecording()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Timber.e(e, "[TRANSCRIPTION] stopRecording | error after stopping recording")
+                    _state.value = TranscriptionState.Error(e.message ?: context.getString(R.string.error_transcription_failed))
+                    scheduleResetToIdle()
+                }
+            }
+        }
+    }
+
+
+    /**
+     * Execute a [VoiceAction] detected in a completed streaming line.
+     *
+     * [VoiceAction.StopListening] is handled locally; all other actions are
+     * dispatched to [AccessibilityStateHolder.executeVoiceAction] which delegates
+     * to the running [SafeWordAccessibilityService].
+     */
+    private fun executeVoiceAction(action: VoiceAction) {
+        when (action) {
+            is VoiceAction.StopListening -> {
+                Timber.i("[VOICE] executeVoiceAction | StopListening → stopping recording")
+                stopRecording()
+            }
+            else -> {
+                val success = accessibilityStateHolder.executeVoiceAction(action)
+                Timber.i("[VOICE] executeVoiceAction | action=%s success=%b", action, success)
+                if (!success) {
+                    Timber.w("[VOICE] executeVoiceAction | a11y service not active or action failed: %s", action)
+                }
+            }
+        }
+    }
+
+    private fun currentCorrectionContext(): InputContextSnapshot =
+        accessibilityStateHolder.inputContextSnapshot()
+
+    private suspend fun handleLineCompleted(
+        lineId: Long,
+        lineText: String,
+        fullText: String,
+        completionEpoch: Long,
+    ) {
+        // TC-1 guard: a callback can race past setEventListener(null) on the
+        // MoonshineFeed thread. If the session is no longer Recording, drop the work.
+        if (_state.value !is TranscriptionState.Recording) return
+        Timber.d("[VOICE] streaming.onLineCompleted | lineId=%d lineLen=%d fullLen=%d", lineId, lineText.length, fullText.length)
+
+        val correctionContext = currentCorrectionContext()
+        // Phase 1: voice command detection on the individual completed line.
+        // Uses detectIncludingTrailing() so commands appended to a dictation
+        // sentence ("Some text. Delete last sentence.") are caught even when
+        // the ASR engine doesn't segment them as a standalone line.
+        when (val cmdResult = voiceCommandDetector.detectIncludingTrailing(lineText)) {
+            is VoiceCommandResult.Command -> {
+                Timber.i("[VOICE] streaming.onLineCompleted | voiceCommand=%s lineText='%s'", cmdResult.action, lineText)
+                sessionCommandsDetected.incrementAndGet()
+                sessionConfidenceSum.addAndGet((cmdResult.confidence * 1000).toLong())
+                sessionConfidenceCount.incrementAndGet()
+                incrementalInserter.skipCommandText(fullText)
+                executeVoiceAction(cmdResult.action)
+                return
+            }
+            is VoiceCommandResult.TrailingCommand -> {
+                Timber.i(
+                    "[VOICE] streaming.onLineCompleted | trailingCommand=%s prefix='%s' lineText='%s'",
+                    cmdResult.action, cmdResult.prefix, lineText,
+                )
+                sessionCommandsDetected.incrementAndGet()
+                sessionConfidenceSum.addAndGet((cmdResult.confidence * 1000).toLong())
+                sessionConfidenceCount.incrementAndGet()
+                // Insert the dictation prefix that preceded the command.
+                if (accessibilityStateHolder.isActive() && cmdResult.prefix.isNotBlank()) {
+                    // Rebuild the "full transcript so far" with the last line
+                    // replaced by just its prefix portion so incrementalInsert
+                    // computes the correct delta.
+                    val adjustedFull = when {
+                        fullText == lineText -> cmdResult.prefix
+                        fullText.endsWith(" $lineText") ->
+                            fullText.dropLast(lineText.length + 1) + " ${cmdResult.prefix}"
+                        else -> fullText  // fallback: shouldn't occur
+                    }
+                    incrementalInserter.incrementalInsert(adjustedFull, correctionContext)
+                }
+                incrementalInserter.skipCommandText(fullText)
+                executeVoiceAction(cmdResult.action)
+                return
+            }
+            is VoiceCommandResult.Text -> { /* fall through to incremental insert */ }
+        }
+
+        if (accessibilityStateHolder.isActive()) {
+            incrementalInserter.incrementalInsert(fullText, correctionContext)
+            sessionLinesInserted.incrementAndGet()
+        }
+        val inserted = incrementalInserter.getInsertedText()
+        _state.update { current ->
+            if (current is TranscriptionState.Recording) {
+                // If a newer interim partial already arrived, only refresh
+                // insertedText and avoid back-writing stale fullText.
+                if (partialUpdateEpoch.get() == completionEpoch) {
+                    current.copy(partialText = fullText, insertedText = inserted)
+                } else {
+                    current.copy(insertedText = inserted)
+                }
+            } else {
+                current
+            }
+        }
+    }
+
+    // ── Moonshine streaming recording ──
+
+    /**
+     * Start a streaming recording session using Moonshine V2.
+     *
+     * The Moonshine library does its own internal VAD, so we skip the Silero ONNX
+     * VAD windowing in the audio recorder. Audio chunks are forwarded to the engine
+     * Audio chunks from [AudioRecorder.audioChunks] are collected inside the recording scope and
+     * forwarded to the engine in real time.
+     */
+    @OptIn(kotlinx.coroutines.FlowPreview::class)
+    private suspend fun startStreamingRecording(
+        useVad: Boolean,
+    ) {
+        cleanupJob?.join()
+        cleanupJob = null
+        val engine = modelManager.streamingEngine
+
+        incrementalInserter.resetForSession()
+        HallucinationFilter.resetSession()
+
+        // Register event listener for live text updates.
+        engine.setEventListener(object : StreamingEventListener {
+            override fun onLineStarted(lineId: Long, text: String) {
+                Timber.d("[VOICE] streaming.onLineStarted | lineId=%d textLen=%d", lineId, text.length)
+            }
+
+            override fun onLineTextChanged(lineId: Long, text: String) {
+                incrementalInserter.updateStreamingText(text)
+                // Gate partial-transcript propagation to the UI on ENABLE_INTERIM_RESULTS.
+                if (!OptimalParameters.ENABLE_INTERIM_RESULTS) return
+
+                // Moonshine can emit brief blank partials between non-blank updates.
+                // Ignoring these transient clears prevents the overlay from collapsing
+                // and reappearing (visible flicker) during active speech.
+                val currentRecording = _state.value as? TranscriptionState.Recording
+                if (text.isBlank() && currentRecording?.partialText?.isNotBlank() == true) {
+                    return
+                }
+
+                partialUpdateEpoch.incrementAndGet()
+                val inserted = incrementalInserter.getInsertedText()
+                _state.update { current ->
+                    if (current is TranscriptionState.Recording) {
+                        current.copy(partialText = text, insertedText = inserted)
+                    } else {
+                        current
+                    }
+                }
+            }
+
+            override fun onLineCompleted(lineId: Long, lineText: String, fullText: String) {
+                val completionEpoch = partialUpdateEpoch.get()
+                incrementalInserter.updateStreamingText(fullText)
+                lastInsertJob = scope.launch(serialInsertDispatcher) {
+                    handleLineCompleted(lineId, lineText, fullText, completionEpoch)
+                }
+            }
+
+            override fun onError(cause: Throwable) {
+                Timber.e(cause, "[ERROR] streaming.onError | message=%s", cause.message)
+                _state.value = TranscriptionState.Error(
+                    message = cause.message ?: context.getString(R.string.error_recording_failed),
+                )
                 scheduleResetToIdle()
-            } finally {
-                stopForegroundService()
             }
+        })
+
+        // Wire the buffer recycler so pool arrays from AudioRecorder are returned after
+        // each nativeAddAudio() call instead of being GC'd (completes the pool contract).
+        engine.setBufferRecycler(audioRecorder::recycleBuffer)
+
+        // Start the Moonshine stream before audio starts flowing.
+        engine.startStream()
+        Timber.d("[STATE] startStreamingRecording | streaming initialized")
+
+        // VAD is always on by design. useVad=false only when Silero failed to load, in which
+        // case the feed gate below opens unconditionally (isVadEnabled escape hatch).
+        audioRecorder.isVadEnabled = useVad
+
+        // Launch amplitude + speech-probability collectors sampled at 100 ms
+        // to reduce ~70 state emissions/sec down to ~10/sec (UI refreshes at 60 fps
+        // so sub-100 ms updates are imperceptible).
+        coroutineScope {
+            launch {
+                // VAD-gated audio feed: suppress silence frames beyond the post-roll window to
+                // prevent the Moonshine decoder from hallucinating on noise during pauses.
+                // A pre-roll buffer ensures speech-onset phonemes captured before VAD triggers
+                // are never dropped. framesSinceSpeech=0 at session start guarantees the first
+                // FEED_POST_ROLL_FRAMES are always fed regardless of VAD warmup state.
+                val preRollBuffer = ArrayDeque<FloatArray>(FEED_PRE_ROLL_FRAMES)
+                var framesSinceSpeech = 0
+
+                audioRecorder.audioChunks.collect { chunk ->
+                    // Use dynamic threshold from AdaptiveVadSensitivity with 0.8 multiplier
+                    // to provide hysteresis against ambient noise fluctuations.
+                    val dynamicThreshold = adaptiveVadSensitivity.speechThreshold.value * 0.8f
+                    val effectiveThreshold = maxOf(dynamicThreshold, FEED_SPEECH_THRESHOLD_FALLBACK)
+                    val isSpeech = !audioRecorder.isVadEnabled ||
+                        audioRecorder.speechProbability.value >= effectiveThreshold
+
+                    if (isSpeech) {
+                        // Speech (re-)onset: flush any buffered pre-roll if we were fully gated.
+                        if (framesSinceSpeech > FEED_POST_ROLL_FRAMES) {
+                            preRollBuffer.forEach { engine.feedAudio(it) }
+                            preRollBuffer.clear()
+                        }
+                        framesSinceSpeech = 0
+                        engine.feedAudio(chunk)
+                    } else {
+                        framesSinceSpeech++
+                        // Always keep a rolling pre-roll of the most recent chunks (copyOf because
+                        // AudioRecorder reuses pool arrays once the SharedFlow emit is consumed).
+                        if (preRollBuffer.size >= FEED_PRE_ROLL_FRAMES) preRollBuffer.removeFirst()
+                        preRollBuffer.addLast(chunk.copyOf())
+
+                        if (framesSinceSpeech <= FEED_POST_ROLL_FRAMES) {
+                            // Post-roll: feed for ≈1 s after last speech to catch utterance-final words.
+                            engine.feedAudio(chunk)
+                        }
+                        // Beyond post-roll: chunk stays in preRollBuffer only, not fed to engine.
+                    }
+                }
+            }
+            launch {
+                audioRecorder.amplitudeDb
+                    .sample(100)
+                    .collect { db ->
+                        _state.update { current ->
+                            if (current is TranscriptionState.Recording) current.copy(amplitudeDb = db) else current
+                        }
+                    }
+            }
+            launch {
+                audioRecorder.speechProbability
+                    .sample(100)
+                    .collect { prob ->
+                        _state.update { current ->
+                            if (current is TranscriptionState.Recording) current.copy(speechProbability = prob) else current
+                        }
+                    }
+            }
+
+            // Auto-stop after sustained silence (only when VAD is active).
+            // 2.5 s (up from 2 s) — natural conversational pauses can exceed 2 s at
+            // sentence boundaries; 2.5 s prevents premature cut-off without making the
+            // UX feel sluggish (tested at the 95th-percentile pause length for English).
+            if (useVad) {
+                launch {
+                    silenceAutoStopDetector.collectUntilAutoStop(
+                        speechProbability = audioRecorder.speechProbability,
+                        silenceTimeoutMs = SILENCE_AUTO_STOP_MS,
+                        isRecordingActive = { _state.value is TranscriptionState.Recording },
+                        onAutoStop = { stopRecording() },
+                    )
+                }
+            }
+
+            // Start recording — this suspends until cancelled.
+            audioRecorder.record()
         }
     }
 
     /**
-     * Resolve the Whisper model path.
-     * Uses the hardcoded model; falls back to any downloaded Whisper model.
-     * Never returns a VAD model path — loading a non-Whisper model as Whisper
-     * causes a fatal GGML assertion (ggml_ftype_to_ggml_type abort).
+     * Stop the Moonshine streaming session and run post-processing on the final text.
+     *
+     * If incremental insertion was active, most text is already in the text field.
+     * Only the last in-progress partial (not yet a completed line) needs insertion.
+     *
+     * Transitions: Recording → Done (or Error).
      */
-    private fun resolveModelPath(): String? {
-        val modelId = if (modelRepository.isModelDownloaded(ModelInfo.WHISPER_MODEL_ID)) {
-            ModelInfo.WHISPER_MODEL_ID
-        } else {
-            modelRepository.getDownloadedModels()
-                .filter { it.modelType == ModelType.WHISPER }
-                .firstOrNull()?.id
-        }
-        return modelId?.let { modelRepository.getModelPath(it) }
-    }
+    private suspend fun stopStreamingRecording() {
+        val engine = modelManager.streamingEngine
+        val pipelineStart = System.nanoTime()
+        // stopStream() drains buffered audio, waits for the feed consumer, then calls
+        // transcriber.stop() which fires the final LineCompleted synchronously.
+        // Use the engine's authoritative transcript rather than the locally-tracked
+        // streamingTextBuffer, which is updated via async scope.launch and may not
+        // have incorporated the final line by the time we read it here.
+        val engineResult = engine.stopStream()
+        // Wait for any in-flight incremental inserts (queued via serialInsertDispatcher) to
+        // complete before reading the buffer — the final onLineCompleted fires synchronously
+        // inside stopStream() but its scope.launch body may not have executed yet.
+        lastInsertJob?.join()
+        lastInsertJob = null
+        incrementalInserter.clearStreamingText()
 
-    /**
-     * Resolve the path to the GGML Silero VAD model for whisper.cpp native VAD.
-     * Returns empty string if not downloaded (whisper.cpp will skip native VAD).
-     */
-    private fun resolveVadModelPath(): String {
-        if (!modelRepository.isModelDownloaded(ModelInfo.VAD_MODEL_ID)) return ""
-        return modelRepository.getModelPath(ModelInfo.VAD_MODEL_ID)
-    }
-
-    private fun currentInputContext(): InputContext {
-        val snap = SafeWordAccessibilityService.inputContextSnapshot()
-        return InputContext(
-            packageName = snap.packageName,
-            hintText = snap.hintText,
-            className = snap.className,
-        )
-    }
-
-    private fun buildContextAwarePrompt(basePrompt: String, ctx: InputContext): String {
-        val hints = mutableListOf<String>()
-        val pkg = ctx.packageName.lowercase()
-        val hint = ctx.hintText.lowercase()
-        val browserContext = pkg.contains("chrome") ||
-            pkg.contains("browser") ||
-            pkg.contains("firefox") ||
-            pkg.contains("brave") ||
-            pkg.contains("edge") ||
-            pkg.contains("opera")
-        val searchContext = hint.contains("search") || hint.contains("address") || hint.contains("url")
-
-        if (browserContext || searchContext) {
-            hints += "Context: browser search/address field. Preserve literal query words. Prefer short command-like terms exactly as spoken."
-        } else if (pkg.contains("gmail") || pkg.contains("outlook") || pkg.contains("mail")) {
-            hints += "Context: email composition. Preserve names, product terms, and punctuation boundaries."
-        } else if (pkg.contains("message") || pkg.contains("whatsapp") || pkg.contains("telegram") || pkg.contains("signal")) {
-            hints += "Context: messaging. Preserve colloquial words and short utterances verbatim when plausible."
+        val rawText = when (engineResult) {
+            is TranscriptionResult.Success -> engineResult.text
+            TranscriptionResult.NoSpeech -> ""
         }
 
-        if (hints.isEmpty()) return basePrompt
-        val merged = buildString {
-            if (basePrompt.isNotBlank()) {
-                append(basePrompt.trim())
-                append(' ')
+        val alreadyInserted = incrementalInserter.consumeInsertedText()
+
+        if (rawText.isBlank()) {
+            // Diagnostics only — user-facing message is localized.
+            val diagMsg = when (engineResult) {
+                is TranscriptionResult.Success -> "Moonshine returned empty Success"
+                TranscriptionResult.NoSpeech -> "Moonshine.NoSpeech: no speech detected"
             }
-            append(hints.joinToString(" "))
-        }
-        // Keep prompt bounded to avoid prompt bloat on mobile.
-        return merged.take(320)
-    }
-
-    private fun maybeSwitchBackendForLatency(audioDurationMs: Long, rtf: Float) {
-        if (audioDurationMs < 2000L) return
-        if (rtf <= 2.0f) {
-            consecutiveSlowRtfCount = 0
-            return
-        }
-        consecutiveSlowRtfCount++
-        if (consecutiveSlowRtfCount < BACKEND_SWITCH_HYSTERESIS) {
-            Timber.d("[PERF] maybeSwitchBackendForLatency | slow rtf=%.2f count=%d/%d — waiting for hysteresis",
-                rtf, consecutiveSlowRtfCount, BACKEND_SWITCH_HYSTERESIS)
-            return
-        }
-        val now = System.currentTimeMillis()
-        if (now - lastBackendSwitchMs < BACKEND_SWITCH_COOLDOWN_MS) return
-
-        val currentlyGpu = whisperEngine.isUsingGpu()
-        val targetGpu = if (currentlyGpu) {
-            false
-        } else {
-            !thermalMonitor.isThrottled
-        }
-        if (targetGpu == currentlyGpu) return
-
-        val path = resolveModelPath() ?: return
-        lastBackendSwitchMs = now
-        consecutiveSlowRtfCount = 0
-        scope.launch(Dispatchers.IO) {
-            Timber.w(
-                "[PERF] maybeSwitchBackendForLatency | slow rtf=%.2f audioMs=%d switching backend gpu=%b -> %b",
-                rtf,
-                audioDurationMs,
-                currentlyGpu,
-                targetGpu,
-            )
-            whisperEngine.loadModel(path, useGpu = targetGpu)
-        }
-    }
-
-    /** Batch transcription fallback — get all recorded samples and run full pipeline. */
-    private suspend fun batchTranscribeFallback() {
-        val samples = audioRecorder.getRecordedSamples()
-        if (samples.isEmpty()) {
-            Timber.w("[RECORDING] batchTranscribeFallback | no audio recorded — sampleCount=0")
-            _state.value = TranscriptionState.Error(context.getString(R.string.error_no_audio_recorded))
+            Timber.w("[TRANSCRIPTION] stopStreamingRecording | no speech detected | %s | alreadyInserted=%d", diagMsg, alreadyInserted.length)
+            _state.value = TranscriptionState.Error(context.getString(R.string.error_no_speech_detected))
             scheduleResetToIdle()
             return
         }
-        Timber.d("[RECORDING] batchTranscribeFallback | sampleCount=%d launching transcribe", samples.size)
-        transcribe(samples)
+
+        val audioDurationMs = System.currentTimeMillis() - recordingStartTime
+        val pipelineMs = (System.nanoTime() - pipelineStart) / 1_000_000
+
+        val correctionContext = currentCorrectionContext()
+
+        // When incremental insertion ran, each line was already processed through the
+        // full correction pipeline and inserted into the field. Skipping postProcessFull
+        // here avoids three problems:
+        //   1. Done-state text would diverge from field content (TextFormatter adds
+        //      sentence-case + trailing period that weren't applied incrementally).
+        //   2. Vocabulary usage would be double-counted (each line already called
+        //      vocabularyObserver.recordVocabUsed during incrementalInsert).
+        //   3. SymSpell would re-run on text that was already partially corrected,
+        //      potentially producing different output.
+        // When accessibility was off (no incremental path), run the full pipeline once
+        // to produce clean text for clipboard / direct-insertion fallback.
+        val doneText: String
+        val finalMatched: List<String>
+        if (alreadyInserted.isNotEmpty()) {
+            doneText = alreadyInserted
+            finalMatched = emptyList()  // vocab usage already recorded per-line
+        } else {
+            val processResult = incrementalInserter.postProcessFull(rawText, correctionContext)
+            if (processResult == null) {
+                Timber.w("[TRANSCRIPTION] stopStreamingRecording | post-processing yielded blank text | rawLen=%d rawHash=%d", rawText.length, rawText.hashCode())
+                _state.value = TranscriptionState.Error(context.getString(R.string.error_text_filtered_vocabulary))
+                scheduleResetToIdle()
+                return
+            }
+            if (processResult.cleanedText.isBlank() && rawText.isNotBlank()) {
+                Timber.w("[TRANSCRIPTION] stopStreamingRecording | post-processing stripped all text | rawLen=%d cleaned=0 rawHash=%d", rawText.length, rawText.hashCode())
+                _state.value = TranscriptionState.Error(context.getString(R.string.error_text_filtered_generic))
+                scheduleResetToIdle()
+                return
+            }
+            doneText = processResult.cleanedText
+            finalMatched = processResult.matchedVocab
+        }
+
+        val result = TranscriptionResult.Success(
+            text = doneText,
+            audioDurationMs = audioDurationMs,
+            inferenceDurationMs = pipelineMs,
+        )
+
+        Timber.i("[EXIT] stopStreamingRecording | textLen=%d alreadyInserted=%d audioDurationMs=%d pipelineMs=%d",
+            doneText.length, alreadyInserted.length, audioDurationMs, pipelineMs)
+
+        // Session performance summary
+        val cmds = sessionCommandsDetected.get()
+        val lines = sessionLinesInserted.get()
+        val confCount = sessionConfidenceCount.get()
+        val avgConf = if (confCount > 0) sessionConfidenceSum.get().toFloat() / (confCount * 1000f) else 0f
+        Timber.i("[PERF] session summary | commands=%d linesInserted=%d avgCommandConf=%.3f audioDurationMs=%d",
+            cmds, lines, avgConf, audioDurationMs)
+        if (confCount > 0 && avgConf < OptimalParameters.VOICE_COMMAND_CONFIDENCE_THRESHOLD - 0.15f) {
+            Timber.w("[PERF] session | avgConfidence=%.3f dropped >15%% below threshold=%.3f — review accent/noise conditions",
+                avgConf, OptimalParameters.VOICE_COMMAND_CONFIDENCE_THRESHOLD)
+        }
+        performanceMonitor.logSummary()
+
+        _state.value = TranscriptionState.Done(result)
+        scheduleResetToIdle()
+
+        // Record dictation for correction learning — CorrectionLearner will
+        // compare this text with the text-field content on the next dictation
+        // start to detect user corrections.
+        val dictationTextForLearner = doneText.trimEnd()
+        val appliedCorrPairs: List<Pair<String, String>> = finalMatched.mapNotNull { phrase ->
+            val written = vocabularyObserver.confirmedVocabulary.value
+                .find { it.phrase.equals(phrase, ignoreCase = true) }
+                ?.writtenForm ?: return@mapNotNull null
+            phrase to written
+        }
+        correctionLearner.recordDictation(
+            dictationTextForLearner,
+            appPackage = correctionContext.packageName,
+            appliedCorrections = appliedCorrPairs,
+        )
+        idleSnapshotJob = scope.launch {
+            delay(CorrectionLearner.SNAPSHOT_DELAY_MS)
+            val currentText = accessibilityStateHolder.getCurrentFocusedFieldText() ?: return@launch
+            correctionLearner.onTextFieldSnapshot(currentText)
+        }
+
+        // Post-transcription actions based on settings (already read at top of function).
+        if (result.text.isNotBlank()) {
+            var insertedDirectly = alreadyInserted.isNotEmpty()
+            // If incremental insertion was active, only insert what hasn't been inserted yet.
+            if (accessibilityStateHolder.isActive() && !insertedDirectly) {
+                insertedDirectly = accessibilityStateHolder.insertText(result.text)
+            }
+            if (!insertedDirectly) {
+                copyToClipboard(result.text)
+            }
+        }
     }
 
     /**
@@ -449,15 +758,22 @@ class TranscriptionCoordinator @Inject constructor(
      */
     fun cancel() {
         Timber.i("[STATE] cancel | cancelling current operation → Idle")
+        idleSnapshotJob?.cancel()
+        idleSnapshotJob = null
         resetJob?.cancel()
         resetJob = null
-        durationJob?.cancel()
-        durationJob = null
+        modelManager.cancelPreload()
         audioRecorder.stop()
-        recordingJob?.cancel()
-        recordingJob = null
+        sessionJob?.cancel()
+        sessionJob = null
+        // Null out the listener before launching stopStream() so any final
+        // onLineCompleted callbacks fired during teardown are silently dropped.
+        modelManager.streamingEngine.setEventListener(null)
+        // Clear the buffer recycler so the engine holds no reference to AudioRecorder.
+        modelManager.streamingEngine.setBufferRecycler(null)
+        cleanupJob = scope.launch { modelManager.streamingEngine.stopStream() }
+        incrementalInserter.resetForSession()
         _state.value = TranscriptionState.Idle
-        stopForegroundService()
         Timber.i("[STATE] cancel | operation cancelled → Idle")
     }
 
@@ -471,16 +787,16 @@ class TranscriptionCoordinator @Inject constructor(
 
     /**
      * Schedule an auto-reset to Idle after a terminal state (Done / Error).
-     * Gives the UI ~1.5 s to flash the result before returning to Idle.
-     * Cancelled if the user starts a new recording before the delay expires.
+     * Gives the UI [RESET_TO_IDLE_DELAY_MS] (5 s) to let the user read the final text or error
+     * before returning to Idle. Cancelled if the user starts a new recording before the delay
+     * expires.
      */
     private fun scheduleResetToIdle() {
         resetJob?.cancel()
         resetJob = scope.launch {
-            delay(1500)
+            delay(RESET_TO_IDLE_DELAY_MS)
             if (_state.value is TranscriptionState.Done ||
-                _state.value is TranscriptionState.Error ||
-                _state.value is TranscriptionState.CommandDetected
+                _state.value is TranscriptionState.Error
             ) {
                 Timber.d("[STATE] scheduleResetToIdle | auto-reset → Idle from %s", _state.value::class.simpleName)
                 _state.value = TranscriptionState.Idle
@@ -488,459 +804,27 @@ class TranscriptionCoordinator @Inject constructor(
         }
     }
 
-    private suspend fun transcribe(samples: FloatArray) {
-        val pipelineStart = System.nanoTime()
-        // Read current settings for transcription params
-        val settings = settingsRepository.settings.first()
-        val audioDurationSec = samples.size.toFloat() / AudioRecorder.SAMPLE_RATE
-        val whisperThreads = InferenceConfig.optimalWhisperThreads(audioDurationSec)
-        val inputContext = currentInputContext()
-        val contextualPrompt = buildContextAwarePrompt(settings.initialPrompt, inputContext)
-
-        Timber.i("[ENTER] TranscriptionCoordinator.transcribe | sampleCount=%d durationSec=%.2f threads=%d vadEnabled=%b",
-            samples.size, audioDurationSec, whisperThreads, settings.vadEnabled)
-        Timber.d("[TRANSCRIPTION] transcribe | inputContext pkg=%s hint=%s class=%s promptLen=%d",
-            inputContext.packageName, inputContext.hintText, inputContext.className, contextualPrompt.length)
-
-        // Pre-process audio off the main thread.
-        // When native VAD is available, skip the ONNX Silero VAD pre-processing pass entirely —
-        // whisper.cpp's built-in VAD will handle speech detection during decoding.
-        val vadStart = System.nanoTime()
-        val processedSamples = withContext(Dispatchers.Default) {
-            if (settings.vadEnabled && vadDetector.isLoaded) {
-                val windowProbs = audioRecorder.getWindowProbabilities()
-                Timber.i("[VAD] transcribe | using ONNX Silero VAD threshold=%.2f minSpeechMs=%d minSilenceMs=%d cachedWindows=%d",
-                    settings.vadThreshold, settings.vadMinSpeechDurationMs, settings.vadMinSilenceDurationMs, windowProbs.size)
-                vadDetector.extractSpeechFromWindowProbs(
-                    samples = samples,
-                    windowProbs = windowProbs,
-                    threshold = settings.vadThreshold,
-                    minSpeechDurationMs = settings.vadMinSpeechDurationMs,
-                    minSilenceDurationMs = settings.vadMinSilenceDurationMs,
-                )
-            } else {
-                Timber.i("[VAD] transcribe | VAD disabled or not loaded — using energy-based silence trimming vadEnabled=%b isLoaded=%b",
-                    settings.vadEnabled, vadDetector.isLoaded)
-                AudioRecorder.trimSilence(samples)
-            }
-        }
-        val vadMs = (System.nanoTime() - vadStart) / 1_000_000
-        Timber.d("[PERF] TranscriptionCoordinator.transcribe | vadPreProcessMs=%d inputSamples=%d outputSamples=%d reduction=%.0f%%",
-            vadMs, samples.size, processedSamples.size,
-            if (samples.isNotEmpty()) (1 - processedSamples.size.toFloat() / samples.size) * 100 else 0f)
-
-        if (processedSamples.isEmpty()) {
-            Timber.w("[TRANSCRIPTION] transcribe | no speech detected after processing — all silence")
-            _state.value = TranscriptionState.Error("No speech detected — audio was all silence")
-            scheduleResetToIdle()
-            return
-        }
-
-        // Short-circuit inference when VAD speech density is very low.
-        // If ONNX VAD was used and less than 5% of audio was speech, skip whisper entirely.
-        if (settings.vadEnabled && vadDetector.isLoaded) {
-            val speechRatio = processedSamples.size.toFloat() / samples.size.toFloat()
-            if (speechRatio < NO_SPEECH_DENSITY_THRESHOLD) {
-                Timber.w("[TRANSCRIPTION] transcribe | speech density %.1f%% < %.0f%% — skipping inference",
-                    speechRatio * 100, NO_SPEECH_DENSITY_THRESHOLD * 100)
-                _state.value = TranscriptionState.Error("No speech detected — audio was all silence")
-                scheduleResetToIdle()
-                return
-            }
-        }
-
-        // Long recordings (>30 s) are chunked so Whisper's 30-s encoder window is not overflowed.
-        if (processedSamples.size > CHUNK_SAMPLES) {
-            Timber.i("[ENTER] TranscriptionCoordinator.transcribeChunked | sampleCount=%d", processedSamples.size)
-            transcribeChunked(processedSamples, pipelineStart)
-            return
-        }
-
-        // Pad audio shorter than 1.25s to 1.25s (20000 samples @ 16kHz).
-        // Whisper degrades noticeably on very short clips; silence padding is free.
-        val minSamples = (AudioRecorder.SAMPLE_RATE * MIN_AUDIO_DURATION_SEC).toInt()
-        val paddedSamples = if (processedSamples.size < minSamples) {
-            Timber.d("[TRANSCRIPTION] transcribe | short audio padded | before=%d after=%d samples", processedSamples.size, minSamples)
-            val buf = paddingBuffer.let { existing ->
-                if (existing != null && existing.size >= minSamples) {
-                    existing.fill(0f)
-                    existing
-                } else {
-                    FloatArray(minSamples).also { paddingBuffer = it }
-                }
-            }
-            processedSamples.copyInto(buf)
-            buf
-        } else {
-            processedSamples
-        }
-
-        val audioDurationMs = (paddedSamples.size.toLong() * 1000) / AudioRecorder.SAMPLE_RATE
-        _state.value = TranscriptionState.Transcribing(audioDurationMs = audioDurationMs)
-
-        try {
-            // Disable native VAD — audio is already pre-trimmed by ONNX Silero
-            // VAD above; running a second VAD pass inside whisper.cpp adds latency
-            // with no benefit on pre-processed audio.
-            val inferenceConfig = TranscriptionConfig(
-                language = "en",
-                nThreads = whisperThreads,
-                translate = false,
-                autoDetect = false,
-                initialPrompt = contextualPrompt,
-                useVad = false,
-                noSpeechThreshold = settings.noSpeechThreshold,
-                logprobThreshold = settings.logprobThreshold,
-                entropyThreshold = settings.entropyThreshold,
-            )
-            val accumulatedText = StringBuilder()
-            val rawResult = whisperEngine.transcribeStreaming(
-                samples = paddedSamples,
-                config = inferenceConfig,
-                onSegment = { segmentText ->
-                    accumulatedText.append(segmentText)
-                    _state.value = TranscriptionState.Transcribing(
-                        audioDurationMs = audioDurationMs,
-                        partialText = accumulatedText.toString().trim(),
-                    )
-                },
-            )
-
-            val correctedRawText = ConfusionSetCorrector.apply(
-                rawResult.text,
-                ConfusionSetCorrector.Context(
-                    packageName = inputContext.packageName,
-                    hintText = inputContext.hintText,
-                    className = inputContext.className,
-                    avgLogprob = rawResult.avgLogprob,
-                ),
-            )
-            val correctedRawResult = if (correctedRawText != rawResult.text) {
-                Timber.w("[TRANSCRIPTION] transcribe | confusion-set corrected raw text from=\"%s\" to=\"%s\" avgLogprob=%.3f",
-                    rawResult.text, correctedRawText, rawResult.avgLogprob)
-                rawResult.copy(text = correctedRawText)
-            } else {
-                rawResult
-            }
-
-            // Phase 1: Voice command detection — short-circuit before text processing
-            when (val cmdResult = VoiceCommandDetector.detect(correctedRawResult.text)) {
-                is VoiceCommandResult.Command -> {
-                    val pipelineMs = (System.nanoTime() - pipelineStart) / 1_000_000
-                    Timber.i(
-                        "[EXIT] TranscriptionCoordinator.transcribe | voiceCommand=%s pipelineMs=%d rawTextLen=%d",
-                        cmdResult.action::class.simpleName, pipelineMs, correctedRawResult.text.length,
-                    )
-                    _state.value = TranscriptionState.CommandDetected(cmdResult.action)
-                    executeVoiceAction(cmdResult.action)
-                    return
-                }
-                is VoiceCommandResult.Text -> {
-                    // Continue with Phase 2 + 3 text processing below
-                }
-            }
-
-            // Phase 2 + 3: Content normalization and formatting (async — emit raw result first)
-            val pipelineMs = (System.nanoTime() - pipelineStart) / 1_000_000
-            val rtf = if (audioDurationMs > 0) pipelineMs.toFloat() / audioDurationMs else 0f
-            _state.value = TranscriptionState.Done(correctedRawResult)
-            _history.value = _history.value + correctedRawResult
-
-            Timber.i("[PERF] TranscriptionCoordinator.transcribe | pipelineMs=%d rtf=%.2f audioDurationMs=%d inferenceMs=%d vadMs=%d",
-                pipelineMs, rtf, audioDurationMs, correctedRawResult.inferenceDurationMs, vadMs)
-            Timber.i("[EXIT] TranscriptionCoordinator.transcribe | textLen=%d lang=%s (raw — post-processing async)",
-                correctedRawResult.text.length, correctedRawResult.language)
-
-            // Normalize async — update state and history when done
-            val postStart = System.nanoTime()
-            val cleanedText = TextPostProcessor.process(correctedRawResult.text)
-            val postMs = (System.nanoTime() - postStart) / 1_000_000
-            Timber.d("[PERF] TranscriptionCoordinator.transcribe | postProcessMs=%d changed=%b rawLen=%d cleanLen=%d",
-                postMs, cleanedText != correctedRawResult.text, correctedRawResult.text.length, cleanedText.length)
-
-            // Retry voice-command detection after normalization to handle minor ASR punctuation/spacing noise.
-            when (val cmdResult = VoiceCommandDetector.detect(cleanedText)) {
-                is VoiceCommandResult.Command -> {
-                    Timber.i(
-                        "[EXIT] TranscriptionCoordinator.transcribe | normalizedVoiceCommand=%s rawTextLen=%d cleanTextLen=%d",
-                        cmdResult.action::class.simpleName, correctedRawResult.text.length, cleanedText.length,
-                    )
-                    _state.value = TranscriptionState.CommandDetected(cmdResult.action)
-                    executeVoiceAction(cmdResult.action)
-                    return
-                }
-                is VoiceCommandResult.Text -> {
-                    // Continue with regular text flow below.
-                }
-            }
-
-            val result = if (cleanedText != correctedRawResult.text) {
-                val normalizedResult = correctedRawResult.copy(text = cleanedText)
-                _state.value = TranscriptionState.Done(normalizedResult)
-                // Update history entry with normalized text
-                _history.value = _history.value.dropLast(1) + normalizedResult
-                normalizedResult
-            } else {
-                correctedRawResult
-            }
-
-            maybeSwitchBackendForLatency(audioDurationMs = audioDurationMs, rtf = rtf)
-
-            // Auto-reset to Idle so the overlay hides when the keyboard dismisses.
-            scheduleResetToIdle()
-
-            // Post-transcription actions based on settings
-            if (result.text.isNotBlank()) {
-                var insertedDirectly = false
-                if (settings.autoInsertText && SafeWordAccessibilityService.isActive()) {
-                    Timber.d("[TRANSCRIPTION] transcribe | auto-insert enabled, a11y active")
-                    insertedDirectly = SafeWordAccessibilityService.insertText(result.text)
-                } else if (settings.autoInsertText) {
-                    Timber.d("[TRANSCRIPTION] transcribe | auto-insert enabled but a11y NOT active")
-                }
-                if (settings.autoCopyToClipboard && !insertedDirectly) {
-                    Timber.d("[TRANSCRIPTION] transcribe | copying to clipboard (direct insert %s)",
-                        if (insertedDirectly) "succeeded" else "unavailable")
-                    copyToClipboard(result.text)
-                }
-                if (settings.saveToHistory) {
-                    Timber.d("[TRANSCRIPTION] transcribe | auto-save to history enabled")
-                    saveToDatabase(result)
-                }
-            } else {
-                Timber.d("[TRANSCRIPTION] transcribe | result text blank — skipping post-actions")
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Timber.e(e, "[TRANSCRIPTION] transcribe | error threads=%d", whisperThreads)
-            _state.value = TranscriptionState.Error(
-                message = e.message ?: context.getString(R.string.error_transcription_failed),
-                previousState = TranscriptionState.Transcribing(audioDurationMs),
-            )
-            scheduleResetToIdle()
-        }
-    }
-
-    // ── Chunked transcription ──
-
-    /**
-     * Transcribe audio longer than 30 s by splitting it into 30-s chunks.
-     * Each chunk is transcribed sequentially; the accumulated text is emitted
-     * progressively as [TranscriptionState.Transcribing] partial updates.
-     * Post-processing (ConfusionSetCorrector, TextPostProcessor) runs on the
-     * merged result. Voice-command detection is intentionally skipped for
-     * long recordings (no typical use case for commands in 30 s+ audio).
-     */
-    private suspend fun transcribeChunked(samples: FloatArray, pipelineStart: Long) {
-        val fullDurationMs = (samples.size.toLong() * 1000) / AudioRecorder.SAMPLE_RATE
-        _state.value = TranscriptionState.Transcribing(audioDurationMs = fullDurationMs)
-
-        val chunkCount = (samples.size + CHUNK_SAMPLES - 1) / CHUNK_SAMPLES
-        val chunkResults = mutableListOf<TranscriptionResult>()
-
-        try {
-            val settings = settingsRepository.settings.first()
-            val inputContext = currentInputContext()
-            val basePrompt = buildContextAwarePrompt(settings.initialPrompt, inputContext)
-
-            for (i in 0 until chunkCount) {
-                val from = i * CHUNK_SAMPLES
-                val to = minOf(from + CHUNK_SAMPLES, samples.size)
-                val chunk = samples.copyOfRange(from, to)
-                val chunkDurationSec = chunk.size.toFloat() / AudioRecorder.SAMPLE_RATE
-                val whisperThreads = InferenceConfig.optimalWhisperThreads(chunkDurationSec)
-
-                // Use previous chunk text as continuation prompt for better coherence.
-                val chunkPrompt = if (i == 0) {
-                    basePrompt
-                } else {
-                    chunkResults.takeLast(2).joinToString(" ") { it.text.takeLast(200) }
-                }
-
-                val config = TranscriptionConfig(
-                    language = "en",
-                    nThreads = whisperThreads,
-                    translate = false,
-                    autoDetect = false,
-                    initialPrompt = chunkPrompt,
-                    useVad = false,
-                    noSpeechThreshold = settings.noSpeechThreshold,
-                    logprobThreshold = settings.logprobThreshold,
-                    entropyThreshold = settings.entropyThreshold,
-                )
-
-                val accSegBuffer = StringBuilder()
-                val chunkResult = whisperEngine.transcribeStreaming(chunk, config) { seg ->
-                    accSegBuffer.append(seg)
-                    val preview = (chunkResults.map { it.text } + accSegBuffer.toString())
-                        .joinToString(" ")
-                        .trim()
-                    _state.value = TranscriptionState.Transcribing(
-                        audioDurationMs = fullDurationMs,
-                        partialText = preview,
-                    )
-                }
-                if (chunkResult.text.isNotBlank()) chunkResults.add(chunkResult)
-
-                val chunkPreview = chunkResults.joinToString(" ") { it.text }.trim()
-                _state.value = TranscriptionState.Transcribing(
-                    audioDurationMs = fullDurationMs,
-                    partialText = chunkPreview,
-                )
-                Timber.i("[PERF] transcribeChunked | chunk=%d/%d chunkMs=%d textLen=%d",
-                    i + 1, chunkCount, chunkResult.inferenceDurationMs, chunkResult.text.length)
-            }
-
-            val mergedText = chunkResults.joinToString(" ") { it.text }.trim()
-            val avgLogprob = if (chunkResults.isEmpty()) 0f else chunkResults.map { it.avgLogprob }.average().toFloat()
-            val pipelineMs = (System.nanoTime() - pipelineStart) / 1_000_000
-
-            val rawResult = TranscriptionResult(
-                text = mergedText,
-                audioDurationMs = fullDurationMs,
-                inferenceDurationMs = pipelineMs,
-                avgLogprob = avgLogprob,
-            )
-
-            val correctedText = ConfusionSetCorrector.apply(
-                rawResult.text,
-                ConfusionSetCorrector.Context(
-                    packageName = inputContext.packageName,
-                    hintText = inputContext.hintText,
-                    className = inputContext.className,
-                    avgLogprob = rawResult.avgLogprob,
-                ),
-            )
-            val correctedResult = if (correctedText != rawResult.text) rawResult.copy(text = correctedText) else rawResult
-
-            _state.value = TranscriptionState.Done(correctedResult)
-            _history.value = _history.value + correctedResult
-            Timber.i("[EXIT] TranscriptionCoordinator.transcribeChunked | chunks=%d pipelineMs=%d textLen=%d",
-                chunkCount, pipelineMs, correctedResult.text.length)
-
-            val cleanedText = TextPostProcessor.process(correctedResult.text)
-            val finalResult = if (cleanedText != correctedResult.text) {
-                val normalized = correctedResult.copy(text = cleanedText)
-                _state.value = TranscriptionState.Done(normalized)
-                _history.value = _history.value.dropLast(1) + normalized
-                normalized
-            } else {
-                correctedResult
-            }
-
-            val rtf = if (fullDurationMs > 0) pipelineMs.toFloat() / fullDurationMs else 0f
-            maybeSwitchBackendForLatency(audioDurationMs = fullDurationMs, rtf = rtf)
-            scheduleResetToIdle()
-
-            if (finalResult.text.isNotBlank()) {
-                var insertedDirectly = false
-                if (settings.autoInsertText && SafeWordAccessibilityService.isActive()) {
-                    insertedDirectly = SafeWordAccessibilityService.insertText(finalResult.text)
-                }
-                if (settings.autoCopyToClipboard && !insertedDirectly) {
-                    copyToClipboard(finalResult.text)
-                }
-                if (settings.saveToHistory) saveToDatabase(finalResult)
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Timber.e(e, "[ERROR] TranscriptionCoordinator.transcribeChunked | chunks=%d", chunkCount)
-            _state.value = TranscriptionState.Error(
-                message = e.message ?: context.getString(R.string.error_transcription_failed),
-                previousState = TranscriptionState.Transcribing(fullDurationMs),
-            )
-            scheduleResetToIdle()
-        }
-    }
-
-    // ── Voice action execution ──
-
-    /**
-     * Execute a voice action then transition to Idle.
-     * StopListening is handled inline; all other actions are dispatched
-     * to [SafeWordAccessibilityService].
-     */
-    private fun executeVoiceAction(action: VoiceAction) {
-        when (action) {
-            is VoiceAction.StopListening -> {
-                Timber.i("[VOICE] executeVoiceAction | StopListening → cancelling")
-                cancel()
-                return
-            }
-            else -> {
-                if (SafeWordAccessibilityService.isActive()) {
-                    val success = SafeWordAccessibilityService.executeVoiceAction(action)
-                    Timber.i("[VOICE] executeVoiceAction | action=%s success=%b", action, success)
-                    if (!success) {
-                        _state.value = TranscriptionState.Error(
-                            message = context.getString(R.string.error_voice_command_failed),
-                            previousState = TranscriptionState.CommandDetected(action),
-                        )
-                        scheduleResetToIdle()
-                        return
-                    }
-                } else {
-                    Timber.w("[VOICE] executeVoiceAction | a11y service not active, cannot execute %s", action)
-                    _state.value = TranscriptionState.Error(
-                        message = context.getString(R.string.error_accessibility_service_inactive),
-                        previousState = TranscriptionState.CommandDetected(action),
-                    )
-                    scheduleResetToIdle()
-                    return
-                }
-                _state.value = TranscriptionState.Idle
-            }
-        }
-    }
-
-    // ── End voice action execution ──
-
     private fun copyToClipboard(text: String) {
         try {
             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            clipboard.setPrimaryClip(ClipData.newPlainText(context.getString(R.string.clipboard_label_transcription), text))
+            val clip = ClipData.newPlainText(context.getString(R.string.clipboard_label_transcription), text)
+            // Mark as sensitive so system clipboard UI redacts the content from other apps.
+            clip.description.extras = PersistableBundle().apply {
+                putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
+            }
+            clipboard.setPrimaryClip(clip)
             Timber.i("[CLIPBOARD] copyToClipboard | auto-copied %d chars", text.length)
         } catch (e: Exception) {
             Timber.e(e, "[CLIPBOARD] copyToClipboard | failed")
         }
     }
 
-    private suspend fun saveToDatabase(result: TranscriptionResult) {
-        try {
-            transcriptionDao.insert(
-                TranscriptionEntity(
-                    text = result.text,
-                    audioDurationMs = result.audioDurationMs,
-                    inferenceDurationMs = result.inferenceDurationMs,
-                    language = result.language,
-                    createdAt = result.timestamp,
-                ),
-            )
-            Timber.i("[DB] saveToDatabase | saved transcription lang=%s textLen=%d", result.language, result.text.length)
-        } catch (e: Exception) {
-            Timber.e(e, "[DB] saveToDatabase | failed")
-        }
-    }
-
-    private fun stopForegroundService() {
-        try {
-            context.stopService(Intent(context, RecordingService::class.java))
-            Timber.d("[SERVICE] stopForegroundService | RecordingService stopped")
-        } catch (e: Exception) {
-            Timber.w(e, "[SERVICE] stopForegroundService | error stopping RecordingService")
-        }
-    }
-
+    // Lint incorrectly flags Intent(context, Class) as an ImplicitSamInstance — comment kept for context.
     suspend fun destroy() {
         Timber.i("[LIFECYCLE] TranscriptionCoordinator.destroy | releasing all resources")
-        durationJob?.cancel()
-        recordingJob?.cancel()
+        sessionJob?.cancel()
         // Do NOT cancel scope — it's the shared @ApplicationScope
-        whisperEngine.release()
-        vadDetector.release()
-        stopForegroundService()
+        modelManager.releaseAll()
         Timber.i("[EXIT] TranscriptionCoordinator.destroy | complete")
     }
 }
