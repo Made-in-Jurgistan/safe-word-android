@@ -1,0 +1,153 @@
+# Detekt configuration for Safe Word Android
+# Enforces Kotlin code quality standards across the codebase
+
+build:
+  warningThreshold: 1000
+  failThreshold: 10000
+
+input:
+  - app/src/main
+  - app/src/test
+
+output-reports:
+  - 'report-format: sarif'
+  - 'report-file: build/reports/detekt/detekt.sarif'
+
+excludes:
+  - '**/build/**'
+  - '**/test/**'
+  - '**/androidTest/**'
+
+issues:
+  # Treat warnings as errors only for critical issues
+  treat-as-error:
+    - UnsafeCast
+
+rules:
+  # Complexity thresholds
+  complexity:
+    # Warn if cyclomatic complexity exceeds 10 in a function
+    CyclomaticComplexity:
+      threshold: 10
+    # Warn if nested block depth exceeds 4
+    NestedBlockDepth:
+      threshold: 4
+    # Warn if method has more than 15 parameters
+    LongParameterList:
+      threshold: 15
+    # Warn if line count exceeds 250 lines per file
+    LongMethod:
+      threshold: 250
+
+  # Code style
+  style:
+    # Ban the !! operator (use requireNotNull, checkNotNull, or safe-call chains)
+    UnsafeCallOnNullableType:
+      active: true
+    # Warn on unused imports
+    UnusedImports:
+      active: true
+    # Warn on wildcard imports
+    WildcardImport:
+      active: true
+      excludeImports: []
+    # Ban println, print, System.out
+    ForbiddenComment:
+      active: true
+      values: ['TODO', 'FIXME', 'XXX', 'HACK']
+    # Warn on println and System.out (unsafe logging)
+    Println:
+      active: true
+    # Warn on e.printStackTrace()
+    PrintStackTrace:
+      active: true
+
+  # Potential bugs
+  potential-bugs:
+    # Warn if function parameter is never used
+    UnusedParameter:
+      active: true
+      ignoreAnnotated: ['androidx.compose.runtime.Composable']
+    # Warn if variable is never used
+    UnusedVariable:
+      active: true
+    # Warn on infinite loops without escape
+    UnusedPrivateClass:
+      active: true
+
+  # Performance
+  performance:
+    # Warn on multiple filter + map chains (use filterMap or sequence)
+    ForEachOnRange:
+      active: true
+    # Warn on Array.forEach with manual indexing (use forEachIndexed)
+    SpreadOperator:
+      active: false
+
+  # Android-specific (via detekt-formatting)
+  formatting:
+    ChainWrapping:
+      active: true
+    Indentation:
+      active: true
+    MaximumLineLength:
+      maxLineLength: 120
+      ignoreBacktickedIdentifier: true
+
+  # Comments
+  comments:
+    # Warn if public function lacks kdoc
+    MissingKdoc:
+      active: false # Too many false positives, but useful to enable periodically
+
+  # Exceptions
+  exceptions:
+    # Warn if catch is too broad (e.g., catch (Exception) without logging)
+    TooGenericExceptionCaught:
+      active: true
+    # Warn if exception is swallowed silently
+    SwallowedException:
+      active: true
+    # Warn if try block is redundant
+    TryBlockOutsideTryCatch:
+      active: true
+
+  # Empty blocks
+  empty-blocks:
+    EmptyFunctionBlock:
+      active: true
+    EmptyClassBlock:
+      active: true
+    EmptyWhenBlock:
+      active: true
+    EmptyIfBlock:
+      active: true
+    EmptyCatchBlock:
+      active: true
+
+  # Naming
+  naming:
+    # Warn on function names not in camelCase
+    FunctionNaming:
+      active: true
+    # Warn on variable names not in camelCase
+    VariableNaming:
+      active: true
+    # Warn on constant names not in UPPER_SNAKE_CASE
+    ConstantNaming:
+      active: true
+    # Warn on class names not in PascalCase
+    ClassNaming:
+      active: true
+    # Warn on enum entry names not in UPPER_SNAKE_CASE
+    EnumNaming:
+      active: true
+
+  # Coroutines
+  coroutines:
+    # Warn if GlobalScope.launch is used (bad practice)
+    GlobalCoroutineUsage:
+      active: true
+    # Warn if suspend function is never awaited
+    SuspendFunWithFlowReturnType:
+      active: false
