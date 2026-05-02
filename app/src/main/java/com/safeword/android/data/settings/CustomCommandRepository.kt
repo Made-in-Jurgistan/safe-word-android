@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import timber.log.Timber
+import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -28,7 +29,7 @@ private val Context.customCommandsDataStore: DataStore<Preferences> by preferenc
  */
 @Singleton
 class CustomCommandRepository @Inject constructor(
-    @dagger.hilt.android.qualifiers.ApplicationContext private val context: Context,
+    @ApplicationContext private val context: Context,
 ) {
     private object Keys {
         val CUSTOM_COMMANDS = stringPreferencesKey("custom_commands_json")

@@ -1,20 +1,24 @@
 ﻿package com.safeword.android.transcription
 
+import android.app.ActivityManager
 import android.content.Context
+import android.os.PowerManager
 import android.os.VibrationEffect
 import android.os.Vibrator
+import com.safeword.android.R
 import com.safeword.android.data.model.ModelInfo
 import com.safeword.android.data.model.ModelRepository
 import com.safeword.android.data.settings.CustomCommandRepository
 import com.safeword.android.data.settings.SettingsRepository
-import com.safeword.android.R
+import com.safeword.android.di.ApplicationScope
 import com.safeword.android.service.AccessibilityBridge
 import com.safeword.android.service.SafeWordAccessibilityService
 import com.safeword.android.service.ThermalMonitor
-import com.safeword.android.di.ApplicationScope
-import android.os.PowerManager
 import dagger.hilt.android.qualifiers.ApplicationContext
+import javax.inject.Inject
+import javax.inject.Singleton
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineName
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -25,8 +29,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import javax.inject.Inject
-import javax.inject.Singleton
 import timber.log.Timber
 
 /**
@@ -63,11 +65,16 @@ class TranscriptionCoordinator @Inject constructor(
         private const val THERMAL_SKIP_POSTPROCESS = PowerManager.THERMAL_STATUS_SEVERE
         /** Thermal status at or above which recording is auto-stopped. */
         private const val THERMAL_AUTO_STOP = PowerManager.THERMAL_STATUS_CRITICAL
+        /** Amplitude (dB) at or below which audio is considered silence for auto-stop. */
+        private const val SILENCE_THRESHOLD_DB = -40f
+        /** Minimum available memory (bytes) required to load the model. */
+        private const val MIN_AVAILABLE_MEMORY_BYTES = 1_500_000_000L  // 1.5 GB
     }
 
     private var recordingJob: Job? = null
     private var durationJob: Job? = null
     private var preloadJob: Job? = null
+    private var commandCollectorJob: Job? = null
     private var resetJob: Job? = null
     private var recordingStartTime: Long = 0
     private val streamState = StreamingTextState()
@@ -95,7 +102,10 @@ class TranscriptionCoordinator @Inject constructor(
             return
         }
         // Observe custom voice commands and keep VoiceCommandDetector in sync.
-        scope.launch {
+        // Cancel any existing collector before launching a new one to prevent duplicate collectors
+        // accumulating across service lifecycle restarts.
+        commandCollectorJob?.cancel()
+        commandCollectorJob = scope.launch {
             customCommandRepository.commands.collect { commands ->
                 VoiceCommandDetector.updateCustomCommands(commands)
             }
@@ -107,13 +117,21 @@ class TranscriptionCoordinator @Inject constructor(
                     Timber.w("[INIT] TranscriptionCoordinator.preloadModels | no downloaded model — skipping")
                     return@launch
                 }
-                val updateIntervalMs = settingsRepository.settings.first().streamingUpdateIntervalMs
+                // P0-2: OOM guard - check available memory before loading model
+                if (!hasEnoughMemoryForModel()) {
+                    Timber.e("[INIT] TranscriptionCoordinator.preloadModels | insufficient memory, aborting model load")
+                    _state.value = TranscriptionState.Error("Insufficient memory to load model")
+                    return@launch
+                }
+                val settings = settingsRepository.settings.first()
                 val modelDir = modelRepository.getModelDir(modelInfo.id)
                 Timber.i("[INIT] TranscriptionCoordinator.preloadModels | loading Moonshine model")
                 streamingEngine.load(
                     modelDir = modelDir,
                     expectedComponents = modelInfo.components,
-                    updateIntervalMs = updateIntervalMs,
+                    updateIntervalMs = if (settings.commandModeEnabled) 100 else settings.streamingUpdateIntervalMs,
+                    enableWordTimestamps = settings.enableWordTimestamps,
+                    vadMaxSegmentDurationSec = if (settings.commandModeEnabled) 5 else 15,
                 )
             }
 
@@ -143,31 +161,37 @@ class TranscriptionCoordinator @Inject constructor(
         _state.value = TranscriptionState.Recording()
         recordingStartTime = System.currentTimeMillis()
 
-        // Track recording duration
-        durationJob = scope.launch {
-            val maxMs = settingsRepository.settings.first().maxRecordingDurationSec * 1000L
-            while (true) {
-                delay(DURATION_POLL_INTERVAL_MS)
-                val current = _state.value
-                if (current is TranscriptionState.Recording) {
-                    val elapsed = System.currentTimeMillis() - recordingStartTime
-                    _state.value = current.copy(durationMs = elapsed)
-
-                    // Auto-stop at max duration
-                    if (elapsed >= maxMs) {
-                        Timber.i("[RECORDING] durationJob | max duration reached maxMs=%d elapsedMs=%d", maxMs, elapsed)
-                        stopRecording()
-                        break
-                    }
-                } else {
-                    break
-                }
-            }
-        }
-
+        // Snapshot old job so new job can join its cleanup before starting streaming.
+        val prevJob = recordingJob
         recordingJob = scope.launch {
+            // Wait for any previous recording cleanup (finally → stopStreaming) to fully complete
+            // before starting a new streaming session to prevent the old finally from calling
+            // stopStreaming() on the new session.
+            prevJob?.join()
             try {
                 val settings = settingsRepository.settings.first()
+                val maxMs = settings.maxRecordingDurationSec * 1000L
+
+                // Track recording duration (child coroutine, shares settings with parent)
+                durationJob = launch {
+                    while (true) {
+                        delay(DURATION_POLL_INTERVAL_MS)
+                        val current = _state.value
+                        if (current is TranscriptionState.Recording) {
+                            val elapsed = System.currentTimeMillis() - recordingStartTime
+                            _state.value = current.copy(durationMs = elapsed)
+
+                            // Auto-stop at max duration
+                            if (elapsed >= maxMs) {
+                                Timber.i("[RECORDING] durationJob | max duration reached maxMs=%d elapsedMs=%d", maxMs, elapsed)
+                                stopRecording()
+                                break
+                            }
+                        } else {
+                            break
+                        }
+                    }
+                }
 
                 if (!streamingEngine.isLoaded.value) {
                     val modelInfo = resolveModelInfo()
@@ -183,13 +207,18 @@ class TranscriptionCoordinator @Inject constructor(
                         streamingEngine.load(
                             modelDir = modelDir,
                             expectedComponents = modelInfo.components,
-                            updateIntervalMs = settings.streamingUpdateIntervalMs,
+                            updateIntervalMs = if (settings.commandModeEnabled) 100 else settings.streamingUpdateIntervalMs,
+                            enableWordTimestamps = settings.enableWordTimestamps,
+                            vadMaxSegmentDurationSec = if (settings.commandModeEnabled) 5 else 15,
                         )
                     }
                 }
 
-                // Launch amplitude monitoring
-                launch {
+                // P0-3: Named child jobs for explicit cancellation ordering and clarity.
+                // All are structured children of recordingJob — auto-cancelled when parent is.
+
+                // Monitor amplitude for UI waveform visualization
+                val amplitudeMonitorJob = launch(CoroutineName("amplitudeMonitor")) {
                     audioRecorder.amplitudeDb.collect { db ->
                         val current = _state.value
                         if (current is TranscriptionState.Recording) {
@@ -198,8 +227,34 @@ class TranscriptionCoordinator @Inject constructor(
                     }
                 }
 
+                // Silence-based auto-stop — consumes the autoStopSilenceMs setting that was
+                // previously stored but never applied.
+                val silenceMs = settings.autoStopSilenceMs.toLong()
+                val silenceAutoStopJob = if (silenceMs > 0) {
+                    launch(CoroutineName("silenceAutoStop")) {
+                        var silenceTimerJob: Job? = null
+                        audioRecorder.amplitudeDb.collect { db ->
+                            if (db <= SILENCE_THRESHOLD_DB) {
+                                if (silenceTimerJob?.isActive != true) {
+                                    silenceTimerJob = launch {
+                                        delay(silenceMs)
+                                        val cur = _state.value
+                                        if (cur is TranscriptionState.Recording || cur is TranscriptionState.Streaming) {
+                                            Timber.i("[SILENCE] silence-based auto-stop | silenceMs=%d", silenceMs)
+                                            stopRecording()
+                                        }
+                                    }
+                                }
+                            } else {
+                                silenceTimerJob?.cancel()
+                                silenceTimerJob = null
+                            }
+                        }
+                    }
+                } else null
+
                 // Thermal-aware auto-stop: abort recording if device reaches CRITICAL+
-                launch {
+                val thermalMonitorJob = launch(CoroutineName("thermalAutoStop")) {
                     thermalMonitor.thermalStatus.collect { status ->
                         if (status >= THERMAL_AUTO_STOP && _state.value is TranscriptionState.Recording) {
                             Timber.w("[THERMAL] auto-stop recording | thermalStatus=%d (CRITICAL+)", status)
@@ -209,11 +264,13 @@ class TranscriptionCoordinator @Inject constructor(
                 }
 
                 // Start Moonshine streaming — feeds live partial text to the UI during recording
-                launch {
+                val streamingJob = launch(CoroutineName("moonshineStreaming")) {
                     if (streamingEngine.isLoaded.value) {
                         streamingEngine.startStreaming()
                         val sessionStart = System.currentTimeMillis()
-                        launch {
+
+                        // Collect live partial-transcript events for real-time UI updates
+                        val liveTextJob = launch(CoroutineName("liveTextCollector")) {
                             streamingEngine.streamingEvents.collect { line ->
                                 streamState.setLiveText(line.text)
                                 if (!streamState.draftEditedByUser) {
@@ -230,10 +287,11 @@ class TranscriptionCoordinator @Inject constructor(
                                 }
                             }
                         }
+
                         // B2 + D3: For each finalised Moonshine line — pre-screen for voice
                         // commands (D3), then insert remaining dictation text directly (B2).
                         // This delivers command execution and text insertion without a second pass.
-                        launch {
+                        val completedLinesJob = launch(CoroutineName("completedLinesCollector")) {
                             streamingEngine.completedLines.collect { line ->
                                 if (line.text.isBlank()) return@collect
                                 val inputCtx = currentInputContext()
@@ -278,16 +336,22 @@ class TranscriptionCoordinator @Inject constructor(
                                 }
                             }
                         }
+                        // Suppress unused-var warnings — jobs are structured children; names aid debugging
+                        liveTextJob.invokeOnCompletion { Timber.d("[JOB] liveTextJob done cause=%s", it) }
+                        completedLinesJob.invokeOnCompletion { Timber.d("[JOB] completedLinesJob done cause=%s", it) }
                     }
                 }
 
+                // Log job tree for debugging rapid start/stop cycles
+                Timber.d("[JOB] recording jobs started amplitudeMonitor=%s silenceAutoStop=%s thermalMonitor=%s streaming=%s",
+                    amplitudeMonitorJob, silenceAutoStopJob, thermalMonitorJob, streamingJob)
+
                 // Start recording — this suspends until cancelled
                 try {
-                    audioRecorder.record(onChunkAvailable = { chunk ->
-                        if (streamingEngine.isLoaded.value && streamingEngine.isStreaming.value) {
-                            streamingEngine.addAudio(chunk)
-                        }
-                    })
+                    audioRecorder.record(
+                        onChunkAvailable = { chunk -> streamingEngine.addAudio(chunk) },
+                        accumulateSamples = false,
+                    )
                 } finally {
                     streamingEngine.stopStreaming()
                 }
@@ -303,6 +367,7 @@ class TranscriptionCoordinator @Inject constructor(
             }
         }
     }
+
 
     /**
      * Stop recording and begin transcription. Transitions: Recording/Streaming → Transcribing → Done.
@@ -327,8 +392,6 @@ class TranscriptionCoordinator @Inject constructor(
         audioRecorder.stop()
         // Cancel the recording coroutine so its while(isActive) loop exits
         recordingJob?.cancel()
-        // Cancel preload if still running (model loading on IO).
-        preloadJob?.cancel()
 
         scope.launch {
             try {
@@ -360,32 +423,49 @@ class TranscriptionCoordinator @Inject constructor(
         a11y.inputContextSnapshot()
 
     /** Build a [ConfusionSetCorrector.Context] from the current accessibility snapshot.
-     *  avgLogprob defaults below LOW_CONF threshold so confusion-set corrections fire.
-     *  When word-level timestamps become available from the SDK,
-     *  [WordConfidenceEstimator] can compute a real value here. */
+     *  avgLogprob defaults above LOW_CONF so corrections are skipped until real word-level
+     *  confidence scores are wired in via [WordConfidenceEstimator] (requires SDK word_timestamps). */
     private fun buildCorrectorCtx(ctx: SafeWordAccessibilityService.InputContextSnapshot): ConfusionSetCorrector.Context =
         ConfusionSetCorrector.Context(
             packageName = ctx.packageName,
             hintText = ctx.hintText,
             className = ctx.className,
-            avgLogprob = WordConfidenceEstimator.TRUST_THRESHOLD - 1.0f,
+            // Default above LOW_CONF so corrections are skipped until real word-level
+            // confidence scores are provided by the SDK (word_timestamps = true).
+            // Previously hardcoded to TRUST_THRESHOLD - 1.0f which fell below LOW_CONF,
+            // causing every homophone rule to fire indiscriminately on every transcription.
+            avgLogprob = 0.0f,
         )
 
     /**
-     * Derive [FieldType] from the current input context using hint / class heuristics.
-     * Used to gate voice commands that are inappropriate in certain contexts.
+     * Derive [FieldType] from the current input context using hint / class heuristics
+     * and inputType flags. Used to gate voice commands that are inappropriate in certain contexts.
      */
     private fun deriveFieldType(ctx: SafeWordAccessibilityService.InputContextSnapshot): FieldType {
         val hint = ctx.hintText.lowercase()
         val cls = ctx.className.lowercase()
-        return when {
-            hint.contains("password") || hint.contains("pin") || cls.contains("password") -> FieldType.PASSWORD
-            hint.contains("search") || hint.contains("url") || hint.contains("address") ||
-                cls.contains("url") || cls.contains("search") -> FieldType.SEARCH
-            hint.contains("message") || hint.contains("chat") || hint.contains("sms") ||
-                hint.contains("compose") -> FieldType.MESSAGING
-            else -> FieldType.UNKNOWN
+        val inputType = ctx.inputType
+
+        // P1: Check inputType flags first (more reliable than hint/class heuristics)
+        val isPassword = (inputType and android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD) != 0 ||
+                (inputType and android.text.InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD) != 0 ||
+                (inputType and android.text.InputType.TYPE_TEXT_VARIATION_WEB_PASSWORD) != 0
+        if (isPassword || hint.contains("password") || hint.contains("pin") || cls.contains("password")) {
+            return FieldType.PASSWORD
         }
+
+        val isSearch = (inputType and 0x00020010) != 0
+        if (isSearch || hint.contains("search") || hint.contains("url") || hint.contains("address") ||
+            cls.contains("url") || cls.contains("search")) {
+            return FieldType.SEARCH
+        }
+
+        if (hint.contains("message") || hint.contains("chat") || hint.contains("sms") ||
+            hint.contains("compose")) {
+            return FieldType.MESSAGING
+        }
+
+        return FieldType.UNKNOWN
     }
 
 
@@ -492,7 +572,8 @@ class TranscriptionCoordinator @Inject constructor(
         _draftText.value = ""
         audioRecorder.stop()
         recordingJob?.cancel()
-        recordingJob = null
+        // Do NOT null recordingJob here — startRecording() snapshots and joins it so the
+        // old finally block (stopStreaming) cannot race with the new streaming session.
         _state.value = TranscriptionState.Idle
         Timber.i("[STATE] cancel | operation cancelled → Idle")
     }
@@ -579,6 +660,18 @@ class TranscriptionCoordinator @Inject constructor(
     }
 
     // ── End voice action execution ──
+
+    /**
+     * P0-2: Check if there's enough available memory to load the model.
+     * Returns true if available memory exceeds MIN_AVAILABLE_MEMORY_BYTES.
+     */
+    private fun hasEnoughMemoryForModel(): Boolean {
+        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val memInfo = ActivityManager.MemoryInfo()
+        activityManager.getMemoryInfo(memInfo)
+        Timber.d("[MEM] hasEnoughMemoryForModel | available=${memInfo.availMem / 1_000_000}MB threshold=${MIN_AVAILABLE_MEMORY_BYTES / 1_000_000}MB")
+        return memInfo.availMem >= MIN_AVAILABLE_MEMORY_BYTES
+    }
 
     /**
      * Fire a short 50 ms haptic pulse to confirm a voice command was recognised.

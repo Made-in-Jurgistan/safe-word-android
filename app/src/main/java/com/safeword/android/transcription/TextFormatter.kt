@@ -33,6 +33,11 @@ object TextFormatter {
         "ceo", "cfo", "cto", "coo", "vp", "hr", "pr", "qa",
         "asap", "rsvp", "fyi", "eta", "diy", "faq",
         "gps", "atm", "id", "pin",
+        // P3: 2026 additions
+        "rag", "mcp", "nfc", "oled", "qr", "5g", "wi-fi", "lcd", "led", "vr", "ar", "mr",
+        "iot", "m2m", "v2x", "c2c", "b2b", "b2c", "p2p", "saas", "paas", "iaas",
+        "devops", "mlops", "aops", "sre", "dba", "soc", "ctf", "apt",
+        "gpt4", "gpt5", "claude", "gemini", "llama", "mistral", "qwen",
     )
 
     /** Days of the week (lowercase) → should be capitalized. */

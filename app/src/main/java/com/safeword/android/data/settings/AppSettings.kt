@@ -29,4 +29,15 @@ data class AppSettings(
     // Controls how frequently partial line text is emitted as a Streaming state.
     // 300 = Fast (responsive but more UI updates), 500 = Normal, 1000 = Smooth.
     val streamingUpdateIntervalMs: Int = 500,
+
+    // P3: Enable per-word timestamps from the Moonshine SDK.
+    // Required for confidence-aware ConfusionSetCorrector corrections.
+    // Small latency overhead (~5 ms per utterance). Default true.
+    val enableWordTimestamps: Boolean = true,
+
+    // P2: Command-mode profile — shortens VAD segment duration and transcription interval
+    // for faster voice command detection at the cost of dictation naturalness.
+    // When true: vad_max_segment_duration=5s, transcription_interval=100ms
+    // When false: vad_max_segment_duration=15s, transcription_interval=<streamingUpdateIntervalMs>
+    val commandModeEnabled: Boolean = false,
 )

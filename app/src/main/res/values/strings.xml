@@ -99,6 +99,17 @@
     <string name="settings_personal_dictionary_desc">Teach Safe Word to replace words and phrases</string>
     <string name="settings_custom_commands">Custom Voice Commands</string>
     <string name="settings_custom_commands_desc">Create shortcut phrases to insert text or trigger actions</string>
+    <!-- Transcription settings section -->
+    <string name="settings_section_transcription">Transcription</string>
+    <string name="settings_streaming_interval">Streaming update interval</string>
+    <string name="settings_streaming_interval_desc">How often partial text refreshes: Fast (300 ms), Normal (500 ms), Smooth (1000 ms)</string>
+    <string name="settings_streaming_interval_fast">Fast</string>
+    <string name="settings_streaming_interval_normal">Normal</string>
+    <string name="settings_streaming_interval_smooth">Smooth</string>
+    <string name="settings_word_timestamps">Word-level confidence</string>
+    <string name="settings_word_timestamps_desc">Enables per-word confidence scores for smarter homophone correction (recommended)</string>
+    <string name="settings_command_mode">Command mode</string>
+    <string name="settings_command_mode_desc">Optimises VAD for fast command detection (5 s max segment, 100 ms interval). Reduces dictation quality.</string>
 
     <!-- CustomCommandsScreen -->
     <string name="custom_cmd_title">Custom Commands</string>

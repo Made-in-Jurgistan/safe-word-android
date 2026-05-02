@@ -59,7 +59,7 @@ class MoonshineStreamingEngine @Inject constructor(
         private val UNKNOWN_OPTION_PATTERN = Pattern.compile("Unknown transcriber option: '([^']+)'")
     }
 
-    private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var engineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private val _isLoaded = MutableStateFlow(false)
     val isLoaded: StateFlow<Boolean> = _isLoaded.asStateFlow()
@@ -125,7 +125,7 @@ class MoonshineStreamingEngine @Inject constructor(
         expectedComponents: List<String> = emptyList(),
         updateIntervalMs: Int = 500,
         maxTokensPerSecond: Double = 6.5,
-        enableWordTimestamps: Boolean = false,
+        enableWordTimestamps: Boolean = true,
         vadThreshold: Double = 0.5,
         vadMaxSegmentDurationSec: Int = 15,
     ) {
@@ -259,8 +259,7 @@ class MoonshineStreamingEngine @Inject constructor(
         _isLoaded.value = false
         _isStreaming.value = false
         engineScope.cancel()
-        Timber.i("[LIFECYCLE] MoonshineStreamingEngine.release | transcriber released, scope cancelled")
+        engineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        Timber.i("[LIFECYCLE] MoonshineStreamingEngine.release | transcriber released, scope reset")
     }
-
-
 }

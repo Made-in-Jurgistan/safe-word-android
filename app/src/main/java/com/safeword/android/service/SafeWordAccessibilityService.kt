@@ -33,6 +33,7 @@ class SafeWordAccessibilityService : AccessibilityService() {
         val packageName: String,
         val hintText: String,
         val className: String,
+        val inputType: Int,
         val textFieldFocused: Boolean,
         val keyboardVisible: Boolean,
     )
@@ -62,11 +63,16 @@ class SafeWordAccessibilityService : AccessibilityService() {
         /** Class name of the currently focused editable node (if available). */
         val focusedFieldClass: StateFlow<String> = _focusedFieldClass.asStateFlow()
 
+        private val _focusedFieldInputType = MutableStateFlow(0)
+        /** InputType flags of the currently focused editable node (if available). */
+        val focusedFieldInputType: StateFlow<Int> = _focusedFieldInputType.asStateFlow()
+
         /** Snapshot of the current input context for STT prompt/correction decisions. */
         fun inputContextSnapshot(): InputContextSnapshot = InputContextSnapshot(
             packageName = _activePackageName.value,
             hintText = _focusedFieldHint.value,
             className = _focusedFieldClass.value,
+            inputType = _focusedFieldInputType.value,
             textFieldFocused = _textFieldFocused.value,
             keyboardVisible = _keyboardVisible.value,
         )
@@ -109,6 +115,10 @@ class SafeWordAccessibilityService : AccessibilityService() {
         }
     }
 
+    // P2-7: Cache focused node by window ID to avoid redundant findFocus() tree traversals
+    private var cachedWindowId: Int = -1
+    private var cachedFocusedNode: AccessibilityNodeInfo? = null
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
@@ -132,31 +142,42 @@ class SafeWordAccessibilityService : AccessibilityService() {
             AccessibilityEvent.TYPE_VIEW_FOCUSED,
             AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
             AccessibilityEvent.TYPE_WINDOWS_CHANGED -> {
-                val focused = hasFocusedEditableNode()
-                if (_textFieldFocused.value != focused) {
-                    _textFieldFocused.value = focused
-                    Timber.d("[A11Y] onAccessibilityEvent | textFieldFocused=%b event=%d", focused, event.eventType)
+                // Single IPC call per event — root is reused for focus check and context update.
+                val root = rootInActiveWindow
+
+                // P2-7: Only re-traverse the node tree when the window or focus changes.
+                // TYPE_VIEW_FOCUSED always refreshes (the focused node has changed).
+                // Window-change events refresh only if the window ID has actually changed.
+                val windowId = root?.windowId ?: -1
+                if (event.eventType == AccessibilityEvent.TYPE_VIEW_FOCUSED || windowId != cachedWindowId) {
+                    cachedWindowId = windowId
+                    cachedFocusedNode = root?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+                }
+                val focusedNode = cachedFocusedNode
+
+                val isFocused = focusedNode != null && focusedNode.isEditable
+                if (_textFieldFocused.value != isFocused) {
+                    _textFieldFocused.value = isFocused
+                    Timber.d("[A11Y] onAccessibilityEvent | textFieldFocused=%b event=%d", isFocused, event.eventType)
                 }
                 val imeVisible = hasImeWindow()
                 if (_keyboardVisible.value != imeVisible) {
                     _keyboardVisible.value = imeVisible
                     Timber.d("[A11Y] onAccessibilityEvent | keyboardVisible=%b event=%d", imeVisible, event.eventType)
                 }
-                updateInputContext(event.packageName?.toString())
+                updateInputContext(event.packageName?.toString(), focusedNode)
             }
             else -> { /* ignore TYPE_VIEW_TEXT_CHANGED for focus tracking */ }
         }
     }
 
-    private fun updateInputContext(eventPackage: String?) {
-        val root = rootInActiveWindow
-        val focused = root?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+    private fun updateInputContext(eventPackage: String?, focused: AccessibilityNodeInfo?) {
         val packageName = eventPackage
             ?: focused?.packageName?.toString()
-            ?: root?.packageName?.toString()
             ?: ""
         val hint = focused?.hintText?.toString().orEmpty()
         val className = focused?.className?.toString().orEmpty()
+        val inputType = focused?.inputType ?: 0
 
         if (_activePackageName.value != packageName) {
             _activePackageName.value = packageName
@@ -167,16 +188,22 @@ class SafeWordAccessibilityService : AccessibilityService() {
         if (_focusedFieldClass.value != className) {
             _focusedFieldClass.value = className
         }
+        if (_focusedFieldInputType.value != inputType) {
+            _focusedFieldInputType.value = inputType
+        }
     }
 
     /**
      * Check whether the active window has a focused editable node.
      */
-    private fun hasFocusedEditableNode(): Boolean {
-        val root = rootInActiveWindow ?: return false
+    private fun hasFocusedEditableNode(root: AccessibilityNodeInfo?): Boolean {
+        root ?: return false
         val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
         return focused != null && focused.isEditable
     }
+
+    // Note: hasFocusedEditableNode() is retained for callers outside onAccessibilityEvent.
+    // The onAccessibilityEvent path uses cachedFocusedNode directly to avoid the extra traversal.
 
     /** Check whether an IME (soft keyboard) window is currently on screen. */
     private fun hasImeWindow(): Boolean =
@@ -194,6 +221,9 @@ class SafeWordAccessibilityService : AccessibilityService() {
         _activePackageName.value = ""
         _focusedFieldHint.value = ""
         _focusedFieldClass.value = ""
+        _focusedFieldInputType.value = 0
+        cachedWindowId = -1
+        cachedFocusedNode = null
         Timber.i("[LIFECYCLE] SafeWordAccessibilityService.onDestroy")
     }
 

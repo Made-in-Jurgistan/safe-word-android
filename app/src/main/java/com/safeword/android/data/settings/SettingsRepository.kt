@@ -11,6 +11,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import timber.log.Timber
+import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -21,7 +22,7 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
  */
 @Singleton
 class SettingsRepository @Inject constructor(
-    @dagger.hilt.android.qualifiers.ApplicationContext private val context: Context,
+    @ApplicationContext private val context: Context,
 ) {
 
     private object Keys {
@@ -41,6 +42,10 @@ class SettingsRepository @Inject constructor(
         val MAX_RECORDING_DURATION_SEC = intPreferencesKey("max_recording_duration_sec")
         // Streaming
         val STREAMING_UPDATE_INTERVAL_MS = intPreferencesKey("streaming_update_interval_ms")
+        // Word timestamps
+        val ENABLE_WORD_TIMESTAMPS = booleanPreferencesKey("enable_word_timestamps")
+        // Command mode profile
+        val COMMAND_MODE_ENABLED = booleanPreferencesKey("command_mode_enabled")
     }
 
     /** Observe all settings as a reactive Flow. Missing keys fall back to AppSettings defaults. */
@@ -55,6 +60,8 @@ class SettingsRepository @Inject constructor(
             autoStopSilenceMs = prefs[Keys.AUTO_STOP_SILENCE_MS] ?: defaults.autoStopSilenceMs,
             maxRecordingDurationSec = prefs[Keys.MAX_RECORDING_DURATION_SEC] ?: defaults.maxRecordingDurationSec,
             streamingUpdateIntervalMs = prefs[Keys.STREAMING_UPDATE_INTERVAL_MS] ?: defaults.streamingUpdateIntervalMs,
+            enableWordTimestamps = prefs[Keys.ENABLE_WORD_TIMESTAMPS] ?: defaults.enableWordTimestamps,
+            commandModeEnabled = prefs[Keys.COMMAND_MODE_ENABLED] ?: defaults.commandModeEnabled,
         )
     }
 
@@ -107,6 +114,18 @@ class SettingsRepository @Inject constructor(
         require(ms in 100..5000) { "streamingUpdateIntervalMs must be in [100, 5000], got $ms" }
         Timber.i("[SETTINGS] updateStreamingUpdateIntervalMs | ms=%d", ms)
         context.dataStore.edit { it[Keys.STREAMING_UPDATE_INTERVAL_MS] = ms }
+    }
+
+    // Word timestamps
+    suspend fun updateEnableWordTimestamps(enabled: Boolean) {
+        Timber.i("[SETTINGS] updateEnableWordTimestamps | enabled=%b", enabled)
+        context.dataStore.edit { it[Keys.ENABLE_WORD_TIMESTAMPS] = enabled }
+    }
+
+    // Command mode profile
+    suspend fun updateCommandModeEnabled(enabled: Boolean) {
+        Timber.i("[SETTINGS] updateCommandModeEnabled | enabled=%b", enabled)
+        context.dataStore.edit { it[Keys.COMMAND_MODE_ENABLED] = enabled }
     }
 
     // Onboarding

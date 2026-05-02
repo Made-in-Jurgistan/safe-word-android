@@ -33,4 +33,20 @@ class SettingsViewModel @Inject constructor(
         settingsRepository.updateOverlayEnabled(enabled)
     }
 
+    // P3: Expose streaming interval and word timestamps settings
+    fun updateStreamingUpdateIntervalMs(ms: Int) = viewModelScope.launch {
+        Timber.d("[SETTINGS] SettingsViewModel.updateStreamingUpdateIntervalMs | ms=%d", ms)
+        settingsRepository.updateStreamingUpdateIntervalMs(ms)
+    }
+
+    fun updateEnableWordTimestamps(enabled: Boolean) = viewModelScope.launch {
+        Timber.d("[SETTINGS] SettingsViewModel.updateEnableWordTimestamps | enabled=%b", enabled)
+        settingsRepository.updateEnableWordTimestamps(enabled)
+    }
+
+    fun updateCommandModeEnabled(enabled: Boolean) = viewModelScope.launch {
+        Timber.d("[SETTINGS] SettingsViewModel.updateCommandModeEnabled | enabled=%b", enabled)
+        settingsRepository.updateCommandModeEnabled(enabled)
+    }
+
 }

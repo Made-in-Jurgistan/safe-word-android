@@ -7,6 +7,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import timber.log.Timber
 import javax.inject.Inject
+import javax.inject.Singleton
 
 /**
  * Default [TextProcessor] implementation.
@@ -26,7 +27,7 @@ import javax.inject.Inject
  *
  * @param punctuationEnabled When `false`, phase 2 is skipped entirely.
  */
-@javax.inject.Singleton
+@Singleton
 class DefaultTextProcessor @Inject constructor(
     private val personalizedDictionaryRepository: PersonalizedDictionaryRepository,
     @ApplicationScope private val scope: CoroutineScope,

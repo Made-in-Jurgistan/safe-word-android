@@ -26,6 +26,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -199,6 +200,96 @@ fun SettingsScreen(
                         },
                         onClick = onNavigateToCustomCommands,
                     )
+                }
+
+                Spacer(Modifier.height(16.dp))
+
+                // === TRANSCRIPTION ===
+                GlassSectionHeader(stringResource(R.string.settings_section_transcription))
+                SettingsCard {
+                    // P3-10: Word timestamps toggle
+                    GlassListItem(
+                        headlineContent = {
+                            Text(
+                                stringResource(R.string.settings_word_timestamps),
+                                style = MaterialTheme.typography.bodyLarge,
+                            )
+                        },
+                        supportingContent = {
+                            Text(
+                                stringResource(R.string.settings_word_timestamps_desc),
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        },
+                        trailingContent = {
+                            Switch(
+                                checked = settings.enableWordTimestamps,
+                                onCheckedChange = viewModel::updateEnableWordTimestamps,
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = DoneGreen,
+                                    checkedTrackColor = DoneGreen.copy(alpha = 0.3f),
+                                ),
+                            )
+                        },
+                    )
+                    GlassDivider(modifier = Modifier.padding(vertical = 2.dp))
+                    // P2-6: Command-mode profile toggle
+                    GlassListItem(
+                        headlineContent = {
+                            Text(
+                                stringResource(R.string.settings_command_mode),
+                                style = MaterialTheme.typography.bodyLarge,
+                            )
+                        },
+                        supportingContent = {
+                            Text(
+                                stringResource(R.string.settings_command_mode_desc),
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        },
+                        trailingContent = {
+                            Switch(
+                                checked = settings.commandModeEnabled,
+                                onCheckedChange = viewModel::updateCommandModeEnabled,
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = DoneGreen,
+                                    checkedTrackColor = DoneGreen.copy(alpha = 0.3f),
+                                ),
+                            )
+                        },
+                    )
+                    GlassDivider(modifier = Modifier.padding(vertical = 2.dp))
+                    // P3-9: Streaming update interval picker (300 / 500 / 1000 ms)
+                    val intervalOptions = remember { listOf(300 to R.string.settings_streaming_interval_fast, 500 to R.string.settings_streaming_interval_normal, 1000 to R.string.settings_streaming_interval_smooth) }
+                    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                        Text(
+                            stringResource(R.string.settings_streaming_interval),
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = GlassWhite,
+                        )
+                        Text(
+                            stringResource(R.string.settings_streaming_interval_desc),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = GlassDimText,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Column(modifier = Modifier.selectableGroup()) {
+                            intervalOptions.forEachIndexed { index, (ms, labelRes) ->
+                                if (index > 0) GlassDivider(modifier = Modifier.padding(vertical = 2.dp))
+                                GlassListItem(
+                                    headlineContent = { Text(stringResource(labelRes), style = MaterialTheme.typography.bodyMedium) },
+                                    leadingContent = { RadioButton(selected = settings.streamingUpdateIntervalMs == ms, onClick = null) },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .selectable(
+                                            selected = settings.streamingUpdateIntervalMs == ms,
+                                            onClick = { viewModel.updateStreamingUpdateIntervalMs(ms) },
+                                            role = Role.RadioButton,
+                                        ),
+                                )
+                            }
+                        }
+                    }
                 }
 
                 Spacer(Modifier.height(16.dp))

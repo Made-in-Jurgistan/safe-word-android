@@ -2,16 +2,15 @@ package com.safeword.android.service
 
 import com.safeword.android.data.settings.AppSettings
 import com.safeword.android.data.settings.SettingsRepository
+import com.safeword.android.di.ApplicationScope
 import com.safeword.android.transcription.TranscriptionCoordinator
 import com.safeword.android.transcription.TranscriptionState
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -30,10 +29,10 @@ import javax.inject.Singleton
 class OverlayViewModel @Inject constructor(
     private val transcriptionCoordinator: TranscriptionCoordinator,
     private val thermalMonitor: ThermalMonitor,
-    val settingsRepository: SettingsRepository,
+    private val settingsRepository: SettingsRepository,
     private val a11y: AccessibilityBridge,
+    @ApplicationScope private val scope: CoroutineScope,
 ) {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     /** Current transcription state — observed by the overlay ComposeView. */
     val transcriptionState: StateFlow<TranscriptionState> = transcriptionCoordinator.state
@@ -71,9 +70,8 @@ class OverlayViewModel @Inject constructor(
 
     fun onServiceDestroyed() {
         thermalMonitor.stop()
-        transcriptionCoordinator.cancel()
-        scope.cancel()
-        Timber.i("[LIFECYCLE] OverlayViewModel.onServiceDestroyed | cleanup done, scope cancelled")
+        scope.launch { transcriptionCoordinator.destroy() }
+        Timber.i("[LIFECYCLE] OverlayViewModel.onServiceDestroyed | cleanup started")
     }
 
     /**
