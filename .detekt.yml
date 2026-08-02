@@ -1,0 +1,145 @@
+# Detekt configuration for Safe Word Android.
+# Overrides only the rules we care about; buildUponDefaultConfig = true
+# in app/build.gradle.kts pulls in the full default-detekt-config.yml as
+# the fallback, so every rule not listed here keeps its default behaviour.
+
+config:
+  validation: true
+  warningsAsErrors: false
+
+complexity:
+  # * NOTE: STT pipeline methods (regex matching, command detection, content
+  #   normalization) are inherently complex. Threshold raised from 10 to 25
+  #   to focus on genuinely over-complex methods, not domain-driven complexity.
+  CyclomaticComplexMethod:
+    # * NOTE: startRecording (46) and matchParameterizedCommand (34) are
+    #   domain-complex state machines. Refactoring requires test coverage
+    #   that doesn't yet exist. Threshold set to 50 as a tripwire; reducing
+    #   these methods is tracked as technical debt.
+    threshold: 50
+  LongMethod:
+    threshold: 250
+  LongParameterList:
+    functionThreshold: 15
+    constructorThreshold: 15
+  # * NOTE: Nested block depth 4 is too strict for when+if chains in state
+  #   machine code. 5 allows one level of nesting beyond a flat when.
+  NestedBlockDepth:
+    threshold: 5
+  ComplexCondition:
+    threshold: 5
+  # God-class decomposition is handled in the architecture wave, not by
+  # suppressing the signal; keep LargeClass active as a tripwire.
+  LargeClass:
+    # * NOTE: TranscriptionCoordinator (~730) and VoiceCommandDetector (770)
+    #   are known god classes. Further extraction requires test coverage.
+    #   Threshold 800 as a tripwire; decomposition tracked as tech debt.
+    threshold: 800
+  # TooManyFunctions fires on legitimate service/repository classes; rely on
+  # LargeClass + manual review instead.
+  TooManyFunctions:
+    active: false
+
+coroutines:
+  GlobalCoroutineUsage:
+    active: true
+  SuspendFunWithFlowReturnType:
+    active: false
+
+empty-blocks:
+  EmptyCatchBlock:
+    active: true
+  EmptyClassBlock:
+    active: true
+  EmptyFunctionBlock:
+    active: true
+    # * NOTE: Allow empty override functions (Android lifecycle stubs, no-op
+    #   interface implementations).
+    ignoreOverridden: true
+  EmptyIfBlock:
+    active: true
+  EmptyWhenBlock:
+    active: true
+
+exceptions:
+  SwallowedException:
+    active: true
+  # * NOTE: Disabled — the codebase has intentional boundary catches at
+  #   SDK/JNI/window-manager edges where RuntimeException is the correct
+  #   catch type. SwallowedException still catches actual swallowing.
+  TooGenericExceptionCaught:
+    active: false
+
+naming:
+  ClassNaming:
+    active: true
+  EnumNaming:
+    active: true
+  FunctionNaming:
+    active: true
+    # * NOTE: Allow PascalCase for @Composable functions (Compose convention).
+    functionPattern: '[a-z][a-zA-Z0-9]*|[A-Z][a-zA-Z0-9]*'
+  VariableNaming:
+    active: true
+
+performance:
+  ForEachOnRange:
+    active: true
+  SpreadOperator:
+    active: false
+
+potential-bugs:
+  # Ban the !! operator (use requireNotNull, checkNotNull, or safe-call chains).
+  UnsafeCallOnNullableType:
+    active: true
+  UnsafeCast:
+    active: true
+
+style:
+  # Polling loops with multiple exit conditions (state change + timeout) are
+  # idiomatic; the default of 1 is too strict.
+  LoopWithTooManyJumpStatements:
+    maxJumpCount: 2
+  ForbiddenComment:
+    active: true
+    comments:
+      - reason: 'Forbidden FIXME marker, please fix the problem.'
+        value: 'FIXME:'
+      - reason: 'Forbidden TODO marker, please do the changes.'
+        value: 'TODO:'
+      - reason: 'Forbidden XXX marker.'
+        value: 'XXX:'
+      - reason: 'Forbidden HACK marker.'
+        value: 'HACK:'
+  # Ban print/println in favour of Timber.
+  ForbiddenMethodCall:
+    active: true
+    methods:
+      - reason: 'print does not allow configuring the output stream. Use Timber instead.'
+        value: 'kotlin.io.print'
+      - reason: 'println does not allow configuring the output stream. Use Timber instead.'
+        value: 'kotlin.io.println'
+  MaxLineLength:
+    active: true
+    maxLineLength: 120
+    excludePackageStatements: true
+    excludeImportStatements: true
+    excludeCommentStatements: false
+    excludeRawStrings: true
+  # MagicNumber is too noisy for DSP/audio code (sample rates, chunk sizes,
+  # mel bins). Constants are extracted where it aids readability.
+  MagicNumber:
+    active: false
+  # Guard clauses are idiomatic; ReturnCount's default of 2 is too strict.
+  ReturnCount:
+    active: false
+  ThrowsCount:
+    active: false
+  UnusedImports:
+    active: true
+  UnusedPrivateClass:
+    active: true
+  WildcardImport:
+    active: true
+    excludeImports:
+      - 'java.util.*'

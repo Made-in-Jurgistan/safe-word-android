@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Network security configuration for Safe Word.
+
+  * Cleartext traffic is denied for every domain — model downloads and any
+    future network call must use HTTPS.
+  * Trust anchors are restricted to the system store; user-installed CAs are
+    not trusted, preventing on-device MITM via user-installed certificates.
+  * Model download hosts are listed explicitly so the platform enforces what
+    ModelRepository.REDIRECT_ALLOWLIST already validates at the OkHttp layer.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">download.moonshine.ai</domain>
+        <domain includeSubdomains="true">huggingface.co</domain>
+        <domain includeSubdomains="true">cdn-lfs.huggingface.co</domain>
+        <domain includeSubdomains="true">cdn-lfs-us-1.huggingface.co</domain>
+    </domain-config>
+</network-security-config>
