@@ -1,4 +1,4 @@
-﻿plugins {
+plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -105,8 +105,8 @@ kotlin {
 dependencies {
     // Jetpack Core
     implementation("androidx.core:core-ktx:1.15.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.11.0")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.11.0")
     implementation("androidx.activity:activity-compose:1.9.3")
 
     // Compose BOM
@@ -151,7 +151,7 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     // Lifecycle Compose (collectAsStateWithLifecycle)
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.11.0")
 
     // Media3 ExoPlayer (splash video playback)
     implementation("androidx.media3:media3-exoplayer:1.5.1")
