@@ -1,4 +1,4 @@
-﻿plugins {
+plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -142,7 +142,7 @@ dependencies {
     implementation("com.jakewharton.timber:timber:5.0.1")
 
     // Coroutines
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
 
     // Serialization (custom voice commands JSON)
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
@@ -161,7 +161,7 @@ dependencies {
     // version declared in the root project, eliminating the second 2.1.10 pin.
     testImplementation("junit:junit:4.13.2")
     testImplementation(kotlin("test-junit"))
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
     testImplementation("io.mockk:mockk:1.13.12")
     testImplementation("app.cash.turbine:turbine:1.1.0")
 
