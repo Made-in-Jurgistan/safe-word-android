@@ -1,9 +1,9 @@
 <div align="center">
 
 <div style="text-align: center;">
-  <img src="app/src/main/res/drawable-nodpi/safeword_icon.png" alt="Safe Word" width="120" height="120" />
+  <img src="app/src/main/res/drawable-nodpi/safeword_icon.png" alt="Safe Word" width="138" height="138" />
 </div>
-<div style="color: #0047AB; font-size: 10.5px; font-style: italic; letter-spacing: 0.8px; text-align: left; width: 180px; margin: 0 auto;">Made in Jurgistan</div>
+<div style="color: #0047AB; font-size: 9px; font-style: italic; letter-spacing: 0.4px; text-align: right; width: 138px; margin: 0 auto;">Made in Jurgistan</div>
 
 ### On-Device Voice-to-Text Overlay for Android
 
