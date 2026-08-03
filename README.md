@@ -1,18 +1,19 @@
-<div align="center">
-
-<div style="text-align: center;">
-  <img src="app/src/main/res/drawable-nodpi/safeword_icon.png" alt="Safe Word" width="138" height="138" />
-</div>
-<div style="color: #0047AB; font-size: 9px; font-style: italic; letter-spacing: 0.4px; text-align: right; width: 138px; margin: 0 auto;">Made in Jurgistan</div>
+<table align="center"><tr><td width="138" align="right">
+<img src="app/src/main/res/drawable-nodpi/safeword_icon.png" alt="Safe Word" width="138" height="138" />
+<br/>
+<img src=".github/assets/made-in-jurgistan.svg" alt="Made in Jurgistan" />
+</td></tr></table>
 
 ### On-Device Voice-to-Text Overlay for Android
 
+<p align="center">
 [![Platform](https://img.shields.io/badge/platform-Android%2013+-34A853?style=flat-square&logo=android&logoColor=white)](https://www.android.com)
 [![Kotlin](https://img.shields.io/badge/Kotlin-2.1.10-7F52FF?style=flat-square&logo=kotlin&logoColor=white)](https://kotlinlang.org)
 [![Compose](https://img.shields.io/badge/Jetpack%20Compose-BOM%202024.12-4285F4?style=flat-square&logo=jetpackcompose&logoColor=white)](https://developer.android.com/jetpack/compose)
 [![Min SDK](https://img.shields.io/badge/min%20SDK-33-00C853?style=flat-square)](https://developer.android.com/about/versions)
 [![Target SDK](https://img.shields.io/badge/target%20SDK-35-00C853?style=flat-square)](https://developer.android.com/about/versions)
 [![License](https://img.shields.io/badge/license-MIT-34A853?style=flat-square)](LICENSE)
+</p>
 
 <p align="center">
   <strong>100% on-device speech-to-text.</strong> No cloud. No recordings sent to servers.<br/>
@@ -21,8 +22,6 @@
 </p>
 
 ---
-
-</div>
 
 ## Table of Contents
 
