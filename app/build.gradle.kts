@@ -1,4 +1,4 @@
-﻿plugins {
+plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -128,9 +128,9 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.10.0")
 
     // Room (SQLite for history)
-    implementation("androidx.room:room-runtime:2.6.1")
-    implementation("androidx.room:room-ktx:2.6.1")
-    ksp("androidx.room:room-compiler:2.6.1")
+    implementation("androidx.room:room-runtime:2.8.4")
+    implementation("androidx.room:room-ktx:2.8.4")
+    ksp("androidx.room:room-compiler:2.8.4")
 
     // DataStore (settings)
     implementation("androidx.datastore:datastore-preferences:1.1.1")
@@ -170,7 +170,7 @@ dependencies {
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test:rules:1.6.1")
     androidTestImplementation("androidx.work:work-testing:2.10.0")
-    androidTestImplementation("androidx.room:room-testing:2.6.1")
+    androidTestImplementation("androidx.room:room-testing:2.8.4")
     androidTestImplementation("com.google.dagger:hilt-android-testing:2.53.1")
     androidTestImplementation("io.mockk:mockk-android:1.13.12")
     kspAndroidTest("com.google.dagger:hilt-compiler:2.53.1")
