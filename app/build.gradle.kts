@@ -1,4 +1,4 @@
-﻿plugins {
+plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -162,7 +162,7 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation(kotlin("test-junit"))
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
-    testImplementation("io.mockk:mockk:1.13.12")
+    testImplementation("io.mockk:mockk:1.14.11")
     testImplementation("app.cash.turbine:turbine:1.1.0")
 
     androidTestImplementation("androidx.test:core-ktx:1.6.1")
@@ -172,7 +172,7 @@ dependencies {
     androidTestImplementation("androidx.work:work-testing:2.10.0")
     androidTestImplementation("androidx.room:room-testing:2.6.1")
     androidTestImplementation("com.google.dagger:hilt-android-testing:2.53.1")
-    androidTestImplementation("io.mockk:mockk-android:1.13.12")
+    androidTestImplementation("io.mockk:mockk-android:1.14.11")
     kspAndroidTest("com.google.dagger:hilt-compiler:2.53.1")
 
     // Debug
